@@ -6,6 +6,11 @@ import SwiftUI
 @MainActor
 class IndicatorWindowManager: IndicatorViewDelegate {
     static let shared = IndicatorWindowManager()
+    private static let minimumPanelWidth: CGFloat = 220
+    private static let maximumPanelWidth: CGFloat = 420
+    private static let minimumPanelHeight: CGFloat = 72
+    private static let screenEdgeInset: CGFloat = 24
+    private static let bottomOffset: CGFloat = 96
     
     var window: NSWindow?
     var viewModel: IndicatorViewModel?
@@ -26,7 +31,12 @@ class IndicatorWindowManager: IndicatorViewDelegate {
         if window == nil {
             // Create window if it doesn't exist - using NSPanel for full-screen compatibility
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 220, height: 72),
+                contentRect: NSRect(
+                    x: 0,
+                    y: 0,
+                    width: Self.minimumPanelWidth,
+                    height: Self.minimumPanelHeight
+                ),
                 styleMask: [.borderless, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
@@ -42,30 +52,15 @@ class IndicatorWindowManager: IndicatorViewDelegate {
             self.window = panel
         }
         
-        // Position window - use the screen containing the point, or main screen as fallback
+        // Use the point only to choose the target screen. The indicator itself stays pinned
+        // to a lower-center position on that screen instead of following the caret/cursor.
         let targetScreen = point.flatMap { FocusUtils.screenContaining(point: $0) } ?? NSScreen.main
         if let window = window, let screen = targetScreen {
-            let windowFrame = window.frame
-            let screenFrame = screen.frame
-            
-            var x: CGFloat
-            var y: CGFloat
-            
-            if let point = point {
-                // Position near cursor
-                x = point.x - windowFrame.width / 2
-                y = point.y + 20 // 20 points above cursor
-            } else {
-                // Default to top center of screen
-                x = screenFrame.midX - windowFrame.width / 2
-                y = screenFrame.maxY - windowFrame.height - 100 // 100 pixels from top
-            }
-            
-            // Adjust if out of screen bounds
-            x = max(screenFrame.minX, min(x, screenFrame.maxX - windowFrame.width))
-            y = max(screenFrame.minY, min(y, screenFrame.maxY - windowFrame.height))
-            
-            window.setFrameOrigin(NSPoint(x: x, y: y))
+            let initialFrame = preferredFrame(
+                in: screen.visibleFrame,
+                size: CGSize(width: Self.minimumPanelWidth, height: Self.minimumPanelHeight)
+            )
+            window.setFrame(initialFrame, display: true)
             
             // Set content view
             let hostingView = NSHostingView(rootView: IndicatorWindow(viewModel: newViewModel))
@@ -138,23 +133,36 @@ class IndicatorWindowManager: IndicatorViewDelegate {
 
         let currentFrame = window.frame
         let targetScreenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? currentFrame
-        let clampedWidth = min(max(fittingSize.width, 220), 420)
-        let clampedHeight = min(max(fittingSize.height, 72), targetScreenFrame.height - 120)
-        let newOriginX = min(
-            max(targetScreenFrame.minX, currentFrame.midX - clampedWidth / 2),
-            targetScreenFrame.maxX - clampedWidth
+        let clampedWidth = min(max(fittingSize.width, Self.minimumPanelWidth), Self.maximumPanelWidth)
+        let clampedHeight = min(
+            max(fittingSize.height, Self.minimumPanelHeight),
+            targetScreenFrame.height - (Self.screenEdgeInset * 2)
         )
-        let newOriginY = min(
-            max(targetScreenFrame.minY, currentFrame.maxY - clampedHeight),
-            targetScreenFrame.maxY - clampedHeight
-        )
-
-        let newFrame = NSRect(
-            x: newOriginX,
-            y: newOriginY,
-            width: clampedWidth,
-            height: clampedHeight
+        let newFrame = preferredFrame(
+            in: targetScreenFrame,
+            size: CGSize(width: clampedWidth, height: clampedHeight)
         )
         window.setFrame(newFrame, display: true)
+    }
+
+    private func preferredFrame(in visibleFrame: NSRect, size: CGSize) -> NSRect {
+        let originX = visibleFrame.midX - size.width / 2
+        let originY = visibleFrame.minY + Self.bottomOffset
+
+        let clampedOriginX = min(
+            max(visibleFrame.minX + Self.screenEdgeInset, originX),
+            visibleFrame.maxX - size.width - Self.screenEdgeInset
+        )
+        let clampedOriginY = min(
+            max(visibleFrame.minY + Self.screenEdgeInset, originY),
+            visibleFrame.maxY - size.height - Self.screenEdgeInset
+        )
+
+        return NSRect(
+            x: clampedOriginX,
+            y: clampedOriginY,
+            width: size.width,
+            height: size.height
+        )
     }
 }
