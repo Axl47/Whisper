@@ -1,6 +1,6 @@
-# OpenSuperWhisper
+# Whisper
 
-OpenSuperWhisper is a macOS application that provides real-time audio transcription using the Whisper model. It offers a seamless way to record and transcribe audio with customizable settings and keyboard shortcuts.
+Whisper is a macOS application that provides real-time audio transcription using the Whisper model. It offers a seamless way to record and transcribe audio with customizable settings and keyboard shortcuts.
 
 <p align="center">
 <img src="docs/image.png" width="400" /> <img src="docs/image_indicator.png" width="400" />
@@ -15,14 +15,6 @@ OpenSuperWhisper is a macOS application that provides real-time audio transcript
 - 📁 Drag & drop audio files for transcription with queue processing
 - 🎤 Microphone selection — switch between built-in, external, Bluetooth and iPhone (Apple Continuity) mics from the menu bar
 - 🌍 Support for multiple languages with auto-detection
-- 🇯🇵🇨🇳🇰🇷 Asian language autocorrect ([autocorrect](https://github.com/huacnlee/autocorrect))
-
-## Installation
-
-```shell
-brew update # Optional
-brew install opensuperwhisper
-```
 
 Or from [GitHub releases page](https://github.com/Starmel/OpenSuperWhisper/releases).
 
@@ -41,8 +33,8 @@ If you encounter any issues or have questions, please:
 
 To build locally, you'll need:
 
-    git clone git@github.com:Starmel/OpenSuperWhisper.git
-    cd OpenSuperWhisper
+    git clone git@github.com:Axl47/Whisper.git
+    cd Whisper
     git submodule update --init --recursive
     brew install cmake libomp rust ruby
     gem install xcpretty
@@ -59,14 +51,13 @@ Contributions are welcome! Please feel free to submit pull requests or create is
 
 - [ ] Streaming transcription
 - [ ] Custom dictionary / keyword boosting ([#19](https://github.com/Starmel/OpenSuperWhisper/issues/19))
-- [ ] Intel macOS compatibility ([#15](https://github.com/Starmel/OpenSuperWhisper/issues/15))
 - [ ] Agent mode ([#14](https://github.com/Starmel/OpenSuperWhisper/issues/14))
 - [x] Background app ([#8](https://github.com/Starmel/OpenSuperWhisper/issues/8))
 - [x] Support long-press single key audio recording ([#18](https://github.com/Starmel/OpenSuperWhisper/issues/18))
 
 ## License
 
-OpenSuperWhisper is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Whisper is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Whisper Models
 
