@@ -136,7 +136,7 @@ class ShortcutManager {
         let holdToRecordEnabled = AppPreferences.shared.holdToRecord
         
         Task { @MainActor in
-            if holdToRecordEnabled && self.holdMode {
+            if holdToRecordEnabled && self.activeVm != nil {
                 IndicatorWindowManager.shared.stopRecording()
                 self.activeVm = nil
                 self.holdMode = false

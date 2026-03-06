@@ -5,6 +5,8 @@ import AppKit
 import CoreAudio
 
 class AudioRecorder: NSObject, ObservableObject {
+    typealias LiveSampleHandler = @Sendable ([Float]) -> Void
+
     @Published var isRecording = false
     @Published var isPlaying = false
     @Published var currentlyPlayingURL: URL?
@@ -20,6 +22,19 @@ class AudioRecorder: NSObject, ObservableObject {
     private var microphoneChangeObserver: Any?
     private var connectionCheckTimer: DispatchSourceTimer?
     private var recordingDeviceID: AudioDeviceID?
+    private var liveAudioEngine: AVAudioEngine?
+    private var liveAudioFile: AVAudioFile?
+    private var liveAudioConverter: AVAudioConverter?
+    private var liveSampleHandler: LiveSampleHandler?
+    private let liveCaptureQueue = DispatchQueue(label: "OpenSuperWhisper.AudioRecorder.liveCapture")
+    private var activeRecordingMode: RecordingMode = .none
+    private var didReceiveLiveSamples = false
+
+    private enum RecordingMode {
+        case none
+        case recorder
+        case liveHotkey
+    }
 
     // MARK: - Singleton Instance
 
@@ -125,21 +140,52 @@ class AudioRecorder: NSObject, ObservableObject {
         currentRecordingURL = fileURL
         
         print("start record file to \(fileURL)")
-        
-        #if os(macOS)
-        if let activeMic = MicrophoneService.shared.getActiveMicrophone() {
-            _ = MicrophoneService.shared.setAsSystemDefaultInput(activeMic)
-            print("Set system default input to: \(activeMic.displayName)")
-            
-            if let deviceID = MicrophoneService.shared.getCoreAudioDeviceID(for: activeMic) {
-                recordingDeviceID = deviceID
-            }
-        }
-        #endif
+
+        prepareSystemInput()
         
         let requiresConnection = MicrophoneService.shared.isActiveMicrophoneRequiresConnection()
         updateRecordingState(isRecording: false, isConnecting: requiresConnection)
         startRecordingWithRecorder(fileURL: fileURL, monitorConnection: requiresConnection)
+    }
+
+    func startLiveHotkeyCapture(onSamples: @escaping LiveSampleHandler) {
+        guard canRecord else {
+            print("Cannot start live capture - no audio input available")
+            return
+        }
+
+        if isRecording || isConnecting {
+            cancelRecording()
+        }
+
+        if AppPreferences.shared.playSoundOnRecordStart {
+            playNotificationSound()
+        }
+
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let filename = "\(timestamp).wav"
+        let fileURL = temporaryDirectory.appendingPathComponent(filename)
+        currentRecordingURL = fileURL
+        liveSampleHandler = onSamples
+        didReceiveLiveSamples = false
+
+        prepareSystemInput()
+
+        let requiresConnection = MicrophoneService.shared.isActiveMicrophoneRequiresConnection()
+        updateRecordingState(isRecording: false, isConnecting: requiresConnection)
+
+        do {
+            try startRecordingWithAudioEngine(fileURL: fileURL, monitorConnection: requiresConnection)
+        } catch {
+            print("Failed to start live capture: \(error)")
+            currentRecordingURL = nil
+            liveSampleHandler = nil
+            liveAudioFile = nil
+            liveAudioConverter = nil
+            liveAudioEngine = nil
+            activeRecordingMode = .none
+            updateRecordingState(isRecording: false, isConnecting: false)
+        }
     }
     
     private func startRecordingWithRecorder(fileURL: URL, monitorConnection: Bool) {
@@ -162,6 +208,7 @@ class AudioRecorder: NSObject, ObservableObject {
             audioRecorder?.delegate = self
             audioRecorder?.isMeteringEnabled = monitorConnection
             audioRecorder?.record()
+            activeRecordingMode = .recorder
             if monitorConnection {
                 startConnectionMonitoring()
             } else {
@@ -174,16 +221,65 @@ class AudioRecorder: NSObject, ObservableObject {
             updateRecordingState(isRecording: false, isConnecting: false)
         }
     }
+
+    private func startRecordingWithAudioEngine(fileURL: URL, monitorConnection: Bool) throws {
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+
+        guard let targetFormat = makeTargetFormat(channelCount: inputFormat.channelCount),
+              let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+        else {
+            throw NSError(domain: "AudioRecorder", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "Failed to configure live audio conversion."
+            ])
+        }
+
+        converter.sampleRateConverterQuality = AVAudioQuality.medium.rawValue
+
+        let audioFile = try AVAudioFile(
+            forWriting: fileURL,
+            settings: targetFormat.settings,
+            commonFormat: targetFormat.commonFormat,
+            interleaved: targetFormat.isInterleaved
+        )
+
+        inputNode.removeTap(onBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+            guard let self, let copiedBuffer = self.copyPCMBuffer(buffer) else { return }
+
+            self.liveCaptureQueue.async { [weak self] in
+                self?.processLiveCaptureBuffer(copiedBuffer, monitorConnection: monitorConnection)
+            }
+        }
+
+        engine.prepare()
+        try engine.start()
+
+        liveAudioEngine = engine
+        liveAudioFile = audioFile
+        liveAudioConverter = converter
+        activeRecordingMode = .liveHotkey
+
+        if !monitorConnection {
+            updateRecordingState(isRecording: true, isConnecting: false)
+        }
+
+        print("Live capture started successfully")
+    }
     
     func stopRecording() -> URL? {
+        if activeRecordingMode == .liveHotkey {
+            return stopLiveHotkeyCapture()
+        }
+
         audioRecorder?.stop()
+        audioRecorder = nil
         updateRecordingState(isRecording: false, isConnecting: false)
         stopConnectionMonitoring()
+        activeRecordingMode = .none
         
-        if let url = currentRecordingURL,
-           let duration = try? AVAudioPlayer(contentsOf: url).duration,
-           duration < 1.0
-        {
+        if let url = currentRecordingURL, shouldDiscardShortRecording(at: url) {
             try? FileManager.default.removeItem(at: url)
             currentRecordingURL = nil
             return nil
@@ -193,9 +289,57 @@ class AudioRecorder: NSObject, ObservableObject {
         currentRecordingURL = nil
         return url
     }
+
+    func stopLiveHotkeyCapture() -> URL? {
+        guard activeRecordingMode == .liveHotkey else {
+            return stopRecording()
+        }
+
+        if let inputNode = liveAudioEngine?.inputNode {
+            inputNode.removeTap(onBus: 0)
+        }
+        liveAudioEngine?.stop()
+        liveAudioEngine = nil
+
+        liveCaptureQueue.sync {}
+
+        liveAudioFile = nil
+        liveAudioConverter = nil
+        liveSampleHandler = nil
+        activeRecordingMode = .none
+        didReceiveLiveSamples = false
+
+        updateRecordingState(isRecording: false, isConnecting: false)
+
+        if let url = currentRecordingURL, shouldDiscardShortRecording(at: url) {
+            try? FileManager.default.removeItem(at: url)
+            currentRecordingURL = nil
+            return nil
+        }
+
+        let url = currentRecordingURL
+        currentRecordingURL = nil
+        return url
+    }
     
     func cancelRecording() {
+        if activeRecordingMode == .liveHotkey {
+            if let inputNode = liveAudioEngine?.inputNode {
+                inputNode.removeTap(onBus: 0)
+            }
+            liveAudioEngine?.stop()
+            liveAudioEngine = nil
+            liveCaptureQueue.sync {}
+            liveAudioFile = nil
+            liveAudioConverter = nil
+            liveSampleHandler = nil
+            activeRecordingMode = .none
+            didReceiveLiveSamples = false
+        }
+
         audioRecorder?.stop()
+        audioRecorder = nil
+        activeRecordingMode = .none
         updateRecordingState(isRecording: false, isConnecting: false)
         stopConnectionMonitoring()
         
@@ -242,12 +386,168 @@ class AudioRecorder: NSObject, ObservableObject {
         isPlaying = false
         currentlyPlayingURL = nil
     }
+
+    private func prepareSystemInput() {
+        #if os(macOS)
+        if let activeMic = MicrophoneService.shared.getActiveMicrophone() {
+            _ = MicrophoneService.shared.setAsSystemDefaultInput(activeMic)
+            print("Set system default input to: \(activeMic.displayName)")
+
+            if let deviceID = MicrophoneService.shared.getCoreAudioDeviceID(for: activeMic) {
+                recordingDeviceID = deviceID
+            }
+        }
+        #endif
+    }
+
+    private func shouldDiscardShortRecording(at url: URL) -> Bool {
+        guard let duration = try? AVAudioPlayer(contentsOf: url).duration else {
+            return false
+        }
+        return duration < 1.0
+    }
     
     private func updateRecordingState(isRecording: Bool, isConnecting: Bool) {
         DispatchQueue.main.async {
             self.isRecording = isRecording
             self.isConnecting = isConnecting
         }
+    }
+
+    private func processLiveCaptureBuffer(_ buffer: AVAudioPCMBuffer, monitorConnection: Bool) {
+        guard let converter = liveAudioConverter,
+              let audioFile = liveAudioFile
+        else {
+            return
+        }
+
+        let ratio = converter.outputFormat.sampleRate / converter.inputFormat.sampleRate
+        let outputCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 256
+
+        guard let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: converter.outputFormat,
+            frameCapacity: outputCapacity
+        ) else {
+            return
+        }
+
+        var inputConsumed = false
+        var error: NSError?
+
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if inputConsumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            inputConsumed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        outputBuffer.frameLength = 0
+        converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
+
+        if let error {
+            print("Live conversion error: \(error)")
+            return
+        }
+
+        guard outputBuffer.frameLength > 0 else {
+            return
+        }
+
+        do {
+            try audioFile.write(from: outputBuffer)
+        } catch {
+            print("Failed to write live capture buffer: \(error)")
+        }
+
+        if monitorConnection && !didReceiveLiveSamples {
+            didReceiveLiveSamples = true
+            updateRecordingState(isRecording: true, isConnecting: false)
+        }
+
+        var samples = [Float]()
+        appendMixedSamples(from: outputBuffer, to: &samples)
+        guard !samples.isEmpty else {
+            return
+        }
+
+        liveSampleHandler?(samples)
+    }
+
+    private func copyPCMBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(
+            pcmFormat: buffer.format,
+            frameCapacity: buffer.frameCapacity
+        ) else {
+            return nil
+        }
+
+        copy.frameLength = buffer.frameLength
+
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: buffer.audioBufferList)
+        )
+        let destinationBuffers = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+
+        guard sourceBuffers.count == destinationBuffers.count else {
+            return nil
+        }
+
+        for index in 0..<sourceBuffers.count {
+            let source = sourceBuffers[index]
+            var destination = destinationBuffers[index]
+            guard let sourceData = source.mData, let destinationData = destination.mData else {
+                continue
+            }
+            memcpy(destinationData, sourceData, Int(source.mDataByteSize))
+            destination.mDataByteSize = source.mDataByteSize
+            destinationBuffers[index] = destination
+        }
+
+        return copy
+    }
+
+    private func appendMixedSamples(from buffer: AVAudioPCMBuffer, to output: inout [Float]) {
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0, let channelData = buffer.floatChannelData else { return }
+
+        let channelCount = Int(buffer.format.channelCount)
+        if channelCount == 1 {
+            let mono = UnsafeBufferPointer(start: channelData[0], count: frameCount)
+            output.append(contentsOf: mono)
+            return
+        }
+
+        let normalization = 1.0 / Float(channelCount)
+        output.reserveCapacity(output.count + frameCount)
+
+        for frame in 0..<frameCount {
+            var mixed: Float = 0
+            for channel in 0..<channelCount {
+                mixed += channelData[channel][frame]
+            }
+            output.append(mixed * normalization)
+        }
+    }
+
+    private func makeTargetFormat(channelCount: AVAudioChannelCount) -> AVAudioFormat? {
+        guard channelCount > 0 else { return nil }
+
+        let layoutTag = AudioChannelLayoutTag(
+            kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channelCount)
+        )
+        guard let channelLayout = AVAudioChannelLayout(layoutTag: layoutTag) else {
+            return nil
+        }
+
+        return AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16000,
+            interleaved: false,
+            channelLayout: channelLayout
+        )
     }
     
     private func startConnectionMonitoring() {

@@ -22,6 +22,8 @@ class IndicatorViewModel: ObservableObject {
     @Published var isBlinking = false
     @Published var recorder: AudioRecorder = .shared
     @Published var isVisible = false
+    @Published var liveCommittedText = ""
+    @Published var livePreviewText = ""
     
     var delegate: IndicatorViewDelegate?
     private var blinkTimer: Timer?
@@ -58,10 +60,28 @@ class IndicatorViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        transcriptionService.$transcribedText
+            .combineLatest(transcriptionService.$currentSegment)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] committedText, previewText in
+                self?.liveCommittedText = committedText
+                self?.livePreviewText = previewText
+            }
+            .store(in: &cancellables)
     }
     
     var isTranscriptionBusy: Bool {
-        transcriptionService.isTranscribing || transcriptionQueue.isProcessing
+        transcriptionQueue.isProcessing
+            || (transcriptionService.isTranscribing && !transcriptionService.isLiveWhisperSessionActive)
+    }
+
+    private var shouldUseLiveWhisperHotkeyStreaming: Bool {
+        AppPreferences.shared.selectedEngine == "whisper" && AppPreferences.shared.holdToRecord
+    }
+
+    var liveTranscriptPreview: String {
+        (liveCommittedText + livePreviewText).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     func showBusyMessage() {
@@ -88,7 +108,33 @@ class IndicatorViewModel: ObservableObject {
             state = .recording
             startBlinking()
         }
-        
+
+        if shouldUseLiveWhisperHotkeyStreaming {
+            recorder.startLiveHotkeyCapture { [weak self] samples in
+                guard let self = self else { return }
+                Task { @MainActor in
+                    self.transcriptionService.consumeLiveWhisperSamples(samples)
+                }
+            }
+
+            Task { [weak self] in
+                guard let self = self else { return }
+
+                do {
+                    try await self.transcriptionService.startLiveWhisperHotkeySession(settings: Settings())
+                } catch {
+                    print("Failed to start live Whisper session: \(error)")
+                    self.recorder.cancelRecording()
+                    await self.transcriptionService.cancelLiveWhisperHotkeySession()
+                    await MainActor.run {
+                        self.state = .idle
+                        self.delegate?.didFinishDecoding()
+                    }
+                }
+            }
+            return
+        }
+
         Task.detached { [recorder] in
             recorder.startRecording()
         }
@@ -97,13 +143,41 @@ class IndicatorViewModel: ObservableObject {
     func startDecoding() {
         stopBlinking()
         
-        if isTranscriptionBusy {
+        if isTranscriptionBusy && !transcriptionService.isLiveWhisperSessionActive {
             recorder.cancelRecording()
             showBusyMessage()
             return
         }
         
         state = .decoding
+
+        if transcriptionService.isLiveWhisperSessionActive {
+            let tempURL = recorder.stopLiveHotkeyCapture()
+
+            Task { [weak self] in
+                guard let self = self else { return }
+
+                _ = await self.transcriptionService.finishLiveWhisperHotkeySession()
+
+                if let tempURL {
+                    do {
+                        let text = try await self.transcriptionService.transcribeAudio(
+                            url: tempURL,
+                            settings: Settings()
+                        )
+                        try await self.persistCompletedRecording(from: tempURL, transcription: text)
+                    } catch {
+                        print("Error finalizing live Whisper audio: \(error)")
+                        try? FileManager.default.removeItem(at: tempURL)
+                    }
+                }
+
+                await MainActor.run {
+                    self.delegate?.didFinishDecoding()
+                }
+            }
+            return
+        }
         
         if let tempURL = recorder.stopRecording() {
             Task { [weak self] in
@@ -112,38 +186,7 @@ class IndicatorViewModel: ObservableObject {
                 do {
                     print("start decoding...")
                     let text = try await transcriptionService.transcribeAudio(url: tempURL, settings: Settings())
-                    
-                    // Create a new Recording instance
-                    let timestamp = Date()
-                    let fileName = "\(Int(timestamp.timeIntervalSince1970)).wav"
-                    let recordingId = UUID()
-                    let finalURL = Recording(
-                        id: recordingId,
-                        timestamp: timestamp,
-                        fileName: fileName,
-                        transcription: text,
-                        duration: 0,
-                        status: .completed,
-                        progress: 1.0,
-                        sourceFileURL: nil
-                    ).url
-                    
-                    // Move the temporary recording to final location
-                    try recorder.moveTemporaryRecording(from: tempURL, to: finalURL)
-                    
-                    // Save the recording to store
-                    await MainActor.run {
-                        self.recordingStore.addRecording(Recording(
-                            id: recordingId,
-                            timestamp: timestamp,
-                            fileName: fileName,
-                            transcription: text,
-                            duration: 0,
-                            status: .completed,
-                            progress: 1.0,
-                            sourceFileURL: nil
-                        ))
-                    }
+                    try await self.persistCompletedRecording(from: tempURL, transcription: text)
                     
                     insertText(text)
                     print("Transcription result: \(text)")
@@ -203,13 +246,42 @@ class IndicatorViewModel: ObservableObject {
         stopBlinking()
         hideTimer?.invalidate()
         hideTimer = nil
+        liveCommittedText = ""
+        livePreviewText = ""
         cancellables.removeAll()
     }
 
     func cancelRecording() {
         hideTimer?.invalidate()
         hideTimer = nil
+        if transcriptionService.isLiveWhisperSessionActive {
+            Task {
+                await self.transcriptionService.cancelLiveWhisperHotkeySession()
+            }
+        }
         recorder.cancelRecording()
+    }
+
+    private func persistCompletedRecording(from tempURL: URL, transcription: String) async throws {
+        let timestamp = Date()
+        let fileName = "\(Int(timestamp.timeIntervalSince1970)).wav"
+        let recordingId = UUID()
+        let finalRecording = Recording(
+            id: recordingId,
+            timestamp: timestamp,
+            fileName: fileName,
+            transcription: transcription,
+            duration: 0,
+            status: .completed,
+            progress: 1.0,
+            sourceFileURL: nil
+        )
+
+        try recorder.moveTemporaryRecording(from: tempURL, to: finalRecording.url)
+
+        await MainActor.run {
+            self.recordingStore.addRecording(finalRecording)
+        }
     }
 
     @MainActor
@@ -309,9 +381,19 @@ struct IndicatorWindow: View {
             case .idle:
                 EmptyView()
             }
+
+            if !viewModel.liveTranscriptPreview.isEmpty {
+                Text(viewModel.liveTranscriptPreview)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.primary.opacity(0.9))
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 24)
-        .frame(height: 36)
+        .padding(.vertical, 14)
+        .frame(minHeight: 36)
         .background {
             rect
                 .fill(backgroundColor)
@@ -322,7 +404,7 @@ struct IndicatorWindow: View {
                 .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 4)
         }
         .clipShape(rect)
-        .frame(width: 200)
+        .frame(width: viewModel.liveTranscriptPreview.isEmpty ? 200 : 280)
         .scaleEffect(viewModel.isVisible ? 1 : 0.5)
         .offset(y: viewModel.isVisible ? 0 : 20)
         .opacity(viewModel.isVisible ? 1 : 0)

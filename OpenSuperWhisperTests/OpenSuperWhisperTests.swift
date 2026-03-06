@@ -1045,3 +1045,308 @@ final class AddSpaceAfterSentenceTests: XCTestCase {
         XCTAssertEqual(result, "Test. ")
     }
 }
+
+final class LiveTranscriptionAccumulatorTests: XCTestCase {
+    private func timedToken(
+        _ text: String,
+        startTime: Double,
+        endTime: Double,
+        id: WhisperToken = 0
+    ) -> WhisperTimedToken {
+        WhisperTimedToken(
+            id: id,
+            text: text,
+            startTime: startTime,
+            endTime: endTime
+        )
+    }
+
+    func testApply_commitsOnlyStableSegmentsAndKeepsTailAsPreview() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        let update = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "hello", startTime: 0.0, endTime: 1.0),
+                WhisperSegmentResult(text: "world", startTime: 1.0, endTime: 2.8),
+            ],
+            liveEdge: 3.5,
+            isFinal: false
+        )
+
+        XCTAssertEqual(update.committedText, "hello")
+        XCTAssertEqual(update.committedDelta, "hello")
+        XCTAssertEqual(update.previewTail, " world")
+        XCTAssertEqual(update.committedEndTime, 1.0)
+        XCTAssertFalse(update.isFinal)
+    }
+
+    func testApply_skipsCommittedOverlapAndFlushesTailOnFinal() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        _ = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "hello", startTime: 0.0, endTime: 1.0),
+                WhisperSegmentResult(text: "world", startTime: 1.0, endTime: 2.8),
+            ],
+            liveEdge: 3.5,
+            isFinal: false
+        )
+
+        let secondUpdate = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "hello", startTime: 0.0, endTime: 1.0),
+                WhisperSegmentResult(text: "world", startTime: 1.0, endTime: 2.8),
+                WhisperSegmentResult(text: "again", startTime: 2.8, endTime: 4.0),
+            ],
+            liveEdge: 5.0,
+            isFinal: false
+        )
+
+        XCTAssertEqual(secondUpdate.committedText, "hello world")
+        XCTAssertEqual(secondUpdate.committedDelta, " world")
+        XCTAssertEqual(secondUpdate.previewTail, " again")
+        XCTAssertEqual(secondUpdate.committedEndTime, 2.8)
+        XCTAssertFalse(secondUpdate.isFinal)
+
+        let finalUpdate = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "hello", startTime: 0.0, endTime: 1.0),
+                WhisperSegmentResult(text: "world", startTime: 1.0, endTime: 2.8),
+                WhisperSegmentResult(text: "again", startTime: 2.8, endTime: 4.0),
+            ],
+            liveEdge: 5.0,
+            isFinal: true
+        )
+
+        XCTAssertEqual(finalUpdate.committedText, "hello world again")
+        XCTAssertEqual(finalUpdate.committedDelta, " again")
+        XCTAssertEqual(finalUpdate.previewTail, "")
+        XCTAssertEqual(finalUpdate.committedEndTime, 4.0)
+        XCTAssertTrue(finalUpdate.isFinal)
+    }
+
+    func testApply_addSpaceAfterSentence_onlyTouchesCommittedDelta() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: true)
+
+        let first = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "Hello.", startTime: 0.0, endTime: 1.0),
+                WhisperSegmentResult(text: "preview?", startTime: 1.0, endTime: 2.2),
+            ],
+            liveEdge: 3.0,
+            isFinal: false
+        )
+
+        XCTAssertEqual(first.committedDelta, "Hello. ")
+        XCTAssertEqual(first.committedText, "Hello. ")
+        XCTAssertEqual(first.previewTail, "preview?")
+
+        let second = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "Hello.", startTime: 0.0, endTime: 1.0),
+                WhisperSegmentResult(text: "World.", startTime: 1.0, endTime: 2.0),
+            ],
+            liveEdge: 3.8,
+            isFinal: false
+        )
+
+        XCTAssertEqual(second.committedDelta, "World. ")
+        XCTAssertEqual(second.committedText, "Hello. World. ")
+        XCTAssertEqual(second.previewTail, "")
+    }
+
+    func testApply_stripsRepeatedPrefixWhenBoundaryTimestampsShift() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        _ = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "Okay this is a streaming test", startTime: 0.0, endTime: 2.4),
+                WhisperSegmentResult(text: "let's see what happens", startTime: 2.4, endTime: 4.2),
+            ],
+            liveEdge: 6.0,
+            isFinal: false
+        )
+
+        let update = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "Okay this is a streaming test", startTime: 0.0, endTime: 2.6),
+                WhisperSegmentResult(text: "let's see what happens", startTime: 2.6, endTime: 4.6),
+                WhisperSegmentResult(text: "oh yeah we can see the text updating", startTime: 4.6, endTime: 7.0),
+            ],
+            liveEdge: 8.8,
+            isFinal: false
+        )
+
+        XCTAssertEqual(
+            update.committedText,
+            "Okay this is a streaming test let's see what happens oh yeah we can see the text updating"
+        )
+        XCTAssertEqual(update.committedDelta, " oh yeah we can see the text updating")
+        XCTAssertEqual(update.previewTail, "")
+    }
+
+    func testApply_stripsRepeatedPreviewPrefixAgainstCommittedText() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        _ = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "that's really cool", startTime: 0.0, endTime: 2.0),
+            ],
+            liveEdge: 4.0,
+            isFinal: false
+        )
+
+        let update = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(text: "that's really cool", startTime: 0.0, endTime: 2.2),
+                WhisperSegmentResult(text: "so yeah I think what we have to do", startTime: 2.2, endTime: 5.0),
+            ],
+            liveEdge: 5.8,
+            isFinal: false
+        )
+
+        XCTAssertEqual(update.committedText, "that's really cool")
+        XCTAssertEqual(update.committedDelta, "")
+        XCTAssertEqual(update.previewTail, " so yeah I think what we have to do")
+    }
+
+    func testApply_usesTimedTokensToAvoidRecommittingMergedPrefix() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        _ = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "Okay, so this is a test recording so I'm not repeating anything",
+                    startTime: 0.0,
+                    endTime: 5.28,
+                    tokens: [
+                        timedToken("Okay, so this", startTime: 0.0, endTime: 1.1),
+                        timedToken(" is a test", startTime: 1.1, endTime: 2.2),
+                        timedToken(" recording so I'm", startTime: 2.2, endTime: 3.5),
+                        timedToken(" not repeating", startTime: 3.5, endTime: 4.3),
+                        timedToken(" anything", startTime: 4.3, endTime: 5.28),
+                    ]
+                ),
+            ],
+            liveEdge: 8.0,
+            isFinal: false
+        )
+
+        let update = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "Okay, so this is a test recording so I'm not repeating anything. We can see why it is repeated",
+                    startTime: 0.0,
+                    endTime: 8.48,
+                    tokens: [
+                        timedToken("Okay, so this", startTime: 0.0, endTime: 1.2),
+                        timedToken(" is a test", startTime: 1.2, endTime: 2.4),
+                        timedToken(" recording so I'm", startTime: 2.4, endTime: 3.6),
+                        timedToken(" not repeating", startTime: 3.6, endTime: 4.5),
+                        timedToken(" anything", startTime: 4.5, endTime: 5.28),
+                        timedToken(".", startTime: 5.28, endTime: 5.4),
+                        timedToken(" We can", startTime: 5.4, endTime: 6.0),
+                        timedToken(" see why", startTime: 6.0, endTime: 6.8),
+                        timedToken(" it is", startTime: 6.8, endTime: 7.5),
+                        timedToken(" repeated", startTime: 7.5, endTime: 8.48),
+                    ]
+                ),
+            ],
+            liveEdge: 10.0,
+            isFinal: false
+        )
+
+        XCTAssertEqual(
+            update.committedText,
+            "Okay, so this is a test recording so I'm not repeating anything. We can see why it is repeated"
+        )
+        XCTAssertEqual(update.committedDelta, ". We can see why it is repeated")
+        XCTAssertEqual(update.previewTail, "")
+        XCTAssertEqual(update.committedEndTime, 8.48)
+    }
+
+    func testApply_stripsWhisperControlTokensAndSilenceHallucinationPhrases() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        let update = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "[_BEG_] Ask for follow up changes [_TT_191] I'm talking right now",
+                    startTime: 0.0,
+                    endTime: 3.0
+                ),
+            ],
+            liveEdge: 4.8,
+            isFinal: false
+        )
+
+        XCTAssertEqual(update.committedText, "I'm talking right now")
+        XCTAssertEqual(update.committedDelta, "I'm talking right now")
+        XCTAssertEqual(update.previewTail, "")
+    }
+}
+
+final class BufferedTextInsertionStateTests: XCTestCase {
+
+    func testRecordCommittedDelta_buffersWhenLiveInsertionFailsAndFinalizesOnce() {
+        var state = BufferedTextInsertionState(liveInsertionEnabled: true)
+
+        state.recordCommittedDelta("hello", insertedLive: true)
+        XCTAssertTrue(state.liveInsertionEnabled)
+        XCTAssertEqual(state.bufferedText, "")
+
+        state.recordCommittedDelta(" world", insertedLive: false)
+        XCTAssertFalse(state.liveInsertionEnabled)
+        XCTAssertEqual(state.bufferedText, " world")
+
+        state.recordCommittedDelta("!", insertedLive: true)
+        XCTAssertEqual(state.bufferedText, " world!")
+
+        let finalized = state.finalizeBufferedText()
+        XCTAssertEqual(finalized, " world!")
+        XCTAssertEqual(state.bufferedText, "")
+        XCTAssertNil(state.finalizeBufferedText())
+    }
+
+    func testRecordCommittedDelta_noopForEmptyText() {
+        var state = BufferedTextInsertionState(liveInsertionEnabled: false)
+
+        state.recordCommittedDelta("", insertedLive: false)
+
+        XCTAssertFalse(state.liveInsertionEnabled)
+        XCTAssertEqual(state.bufferedText, "")
+        XCTAssertNil(state.finalizeBufferedText())
+    }
+}
+
+@MainActor
+final class FocusedTextInsertionSessionTests: XCTestCase {
+    func testAppendCommittedDelta_reusesLastInsertedRangeForLaterWrites() {
+        let snapshot = FocusedTextTargetSnapshot(
+            frontmostApplicationPID: 1,
+            element: AXUIElementCreateSystemWide(),
+            selectedTextRange: CFRange(location: 12, length: 0)
+        )
+        var observedRanges: [CFRange?] = []
+        var returnedRanges = [
+            CFRange(location: 17, length: 0),
+            CFRange(location: 23, length: 0),
+        ]
+
+        let session = FocusedTextInsertionSession(
+            snapshot: snapshot,
+            releaseInserter: { _ in XCTFail("Release insertion should not be used during successful live writes") },
+            liveInserter: { _, _, preferredRange in
+                observedRanges.append(preferredRange)
+                return returnedRanges.removeFirst()
+            }
+        )
+
+        session.appendCommittedDelta("hello")
+        session.appendCommittedDelta(" world")
+
+        XCTAssertEqual(observedRanges.count, 2)
+        XCTAssertEqual(observedRanges[0]?.location, 12)
+        XCTAssertEqual(observedRanges[1]?.location, 17)
+    }
+}

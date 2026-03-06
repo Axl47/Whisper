@@ -481,7 +481,7 @@ struct SettingsDownloadableModels {
     ]
 }
 
-struct Settings {
+struct Settings: Sendable {
     static let asianLanguages: Set<String> = ["zh", "ja", "ko"]
     
     var selectedLanguage: String
@@ -1459,4 +1459,3 @@ struct ModelDownloadItemView: View {
         }
     }
 }
-
