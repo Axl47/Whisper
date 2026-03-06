@@ -332,12 +332,12 @@ struct IndicatorWindow: View {
             ? Color.black.opacity(0.24)
             : Color.white.opacity(0.24)
     }
-    
+
     var body: some View {
 
         let rect = RoundedRectangle(cornerRadius: 24)
         
-        VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             switch viewModel.state {
             case .connecting:
                 HStack(spacing: 8) {
@@ -388,17 +388,35 @@ struct IndicatorWindow: View {
             }
 
             if !viewModel.liveTranscriptPreview.isEmpty {
-                Text(viewModel.liveTranscriptPreview)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.primary.opacity(0.9))
-                    .lineLimit(3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    Rectangle()
+                        .fill(.primary.opacity(0.12))
+                        .frame(height: 1)
+
+                    Text(viewModel.liveTranscriptPreview)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundColor(.primary.opacity(0.9))
+                        .lineSpacing(3)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(backgroundColor)
+                        .background {
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Material.thinMaterial)
+                        }
+                )
             }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
-        .frame(minHeight: 36)
+        .frame(minHeight: 44)
         .background {
             rect
                 .fill(backgroundColor)
@@ -409,7 +427,7 @@ struct IndicatorWindow: View {
                 .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 4)
         }
         .clipShape(rect)
-        .frame(width: viewModel.liveTranscriptPreview.isEmpty ? 200 : 280)
+        .frame(width: viewModel.liveTranscriptPreview.isEmpty ? 220 : 360)
         .scaleEffect(viewModel.isVisible ? 1 : 0.5)
         .offset(y: viewModel.isVisible ? 0 : 20)
         .opacity(viewModel.isVisible ? 1 : 0)

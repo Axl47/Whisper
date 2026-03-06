@@ -4,7 +4,7 @@
 - [ ] Run manual in-app verification for popup-only live preview and single final paste
 
 ## In Progress
-- [~] Verify the popup-only live preview behavior in-app
+- [~] Verify the popup-only live preview and transcript container layout in-app
 
 ## Done
 - [x] Review the existing hotkey, recorder, transcription, and insertion flows
@@ -26,3 +26,4 @@
 - [x] Preserve the last popup preview while the post-release batch decode runs
 - [x] Add popup preview boundary-formatting coverage and re-run focused tests plus a full build
 - [x] Update the living docs for the popup-only live preview behavior
+- [x] Refine the indicator UI so the transcript sits in a separated container and the panel resizes with live text
