@@ -49,10 +49,17 @@ private struct DecodeSnapshot: Sendable {
 
 struct LiveTranscriptionAccumulator {
     private static let whisperControlTokenPattern = #"\[_[A-Z0-9]+(?:_[A-Z0-9]+)*_?\]"#
-    private static let knownHallucinationPhrases = [
-        "ask for follow-up changes",
+    private static let knownHallucinationNormalizedPhrases = [
         "ask for follow up changes",
+        "ask follow up changes",
     ]
+    private static let leadingHallucinationPattern =
+        #"^\s*(?:the\s+)?ask(?:\s+for)?\s+follow(?:[- ]?up)\s+changes(?:[\s\p{P}]+|$)"#
+    private static let knownHallucinationWordPhrases = [
+        ["ask", "for", "follow", "up", "changes"],
+        ["ask", "follow", "up", "changes"],
+    ]
+    private static let minimumHallucinationPrefixWordCount = 2
 
     private struct WordToken {
         let normalized: String
@@ -131,27 +138,31 @@ struct LiveTranscriptionAccumulator {
             }
             .filter {
                 !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-                $0.endTime > lastCommittedEndTime
+                (($0.startTime + $0.endTime) / 2.0) > lastCommittedEndTime
             }
 
-        var committedTokens: [TimedTextUnit] = []
+        var candidateCommittedTokens: [TimedTextUnit] = []
         var previewTokens: [TimedTextUnit] = []
-        var updatedCommittedEndTime = lastCommittedEndTime
 
         for token in relevantTokens {
             if token.endTime <= commitHorizon {
-                committedTokens.append(token)
-                updatedCommittedEndTime = max(updatedCommittedEndTime, token.endTime)
+                candidateCommittedTokens.append(token)
             } else {
                 previewTokens.append(token)
             }
         }
 
+        let (committedTokens, deferredCommittedTokens) = Self.splitCommittedTokensAtStableBoundary(
+            candidateCommittedTokens
+        )
+        let updatedCommittedEndTime = committedTokens.last?.endTime ?? lastCommittedEndTime
+
         return buildUpdate(
             committedTextRaw: Self.joinTokenTexts(committedTokens),
-            previewTextRaw: Self.joinTokenTexts(previewTokens),
+            previewTextRaw: Self.joinTokenTexts(deferredCommittedTokens + previewTokens),
             updatedCommittedEndTime: updatedCommittedEndTime,
-            isFinal: isFinal
+            isFinal: isFinal,
+            minimumWordOverlap: 1
         )
     }
 
@@ -177,7 +188,8 @@ struct LiveTranscriptionAccumulator {
             committedTextRaw: Self.joinSegmentTexts(committedSegments),
             previewTextRaw: Self.joinSegmentTexts(previewSegments),
             updatedCommittedEndTime: updatedCommittedEndTime,
-            isFinal: isFinal
+            isFinal: isFinal,
+            minimumWordOverlap: 2
         )
     }
 
@@ -185,13 +197,15 @@ struct LiveTranscriptionAccumulator {
         committedTextRaw: String,
         previewTextRaw: String,
         updatedCommittedEndTime: Double,
-        isFinal: Bool
+        isFinal: Bool,
+        minimumWordOverlap: Int
     ) -> LiveTranscriptionUpdate {
         let sanitizedCommittedText = Self.sanitizeStreamingArtifacts(in: committedTextRaw)
         let sanitizedPreviewText = Self.sanitizeStreamingArtifacts(in: previewTextRaw)
         let rawCommittedDelta = Self.removeTextualOverlap(
             existingText: committedText,
-            incomingText: sanitizedCommittedText
+            incomingText: sanitizedCommittedText,
+            minimumWordOverlap: minimumWordOverlap
         )
         let committedDelta = Self.prepareCommittedDelta(
             rawCommittedDelta,
@@ -207,7 +221,8 @@ struct LiveTranscriptionAccumulator {
         previewTail = Self.preparePreviewTail(
             Self.removeTextualOverlap(
                 existingText: committedText,
-                incomingText: sanitizedPreviewText
+                incomingText: sanitizedPreviewText,
+                minimumWordOverlap: minimumWordOverlap
             ),
             existingText: committedText
         )
@@ -232,6 +247,48 @@ struct LiveTranscriptionAccumulator {
         tokens.map(\.text).joined()
     }
 
+    private static func splitCommittedTokensAtStableBoundary(
+        _ tokens: [TimedTextUnit]
+    ) -> ([TimedTextUnit], [TimedTextUnit]) {
+        guard !tokens.isEmpty else {
+            return ([], [])
+        }
+
+        guard let lastCommittedIndex = tokens.indices.last(where: { index in
+            isStableCommitBoundary(after: tokens[index], next: tokens[safe: index + 1])
+        }) else {
+            return ([], tokens)
+        }
+
+        let committedTokens = Array(tokens[...lastCommittedIndex])
+        let deferredTokens = lastCommittedIndex + 1 < tokens.count
+            ? Array(tokens[(lastCommittedIndex + 1)...])
+            : []
+        return (committedTokens, deferredTokens)
+    }
+
+    private static func isStableCommitBoundary(
+        after token: TimedTextUnit,
+        next: TimedTextUnit?
+    ) -> Bool {
+        let trimmedCurrent = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let lastCharacter = trimmedCurrent.last, lastCharacter.isPunctuation {
+            return true
+        }
+
+        if token.text.last?.isWhitespace == true {
+            return true
+        }
+
+        if let nextCharacter = next?.text.first,
+           nextCharacter.isWhitespace || nextCharacter.isPunctuation
+        {
+            return true
+        }
+
+        return false
+    }
+
     private static func sanitizeStreamingArtifacts(in text: String) -> String {
         guard !text.isEmpty else {
             return text
@@ -243,14 +300,95 @@ struct LiveTranscriptionAccumulator {
             options: .regularExpression
         )
 
-        for phrase in knownHallucinationPhrases {
-            while let range = cleaned.range(of: phrase, options: [.caseInsensitive]) {
-                cleaned.removeSubrange(range)
-            }
+        cleaned = stripLeadingStandaloneHallucinationPhrase(from: cleaned)
+        cleaned = stripTrailingStandaloneHallucinationFragment(from: cleaned)
+
+        if isKnownHallucinationPhrase(cleaned) {
+            return ""
         }
 
         cleaned = cleaned.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         return cleaned
+    }
+
+    private static func stripTrailingStandaloneHallucinationFragment(from text: String) -> String {
+        guard let clauseStart = trailingClauseStart(in: text) else {
+            return text
+        }
+
+        let trailingClause = String(text[clauseStart...])
+        let trailingWords = normalizedWords(in: trailingClause)
+
+        guard trailingWords.count >= minimumHallucinationPrefixWordCount else {
+            return text
+        }
+
+        let matchesHallucinationPrefix = knownHallucinationWordPhrases.contains { phrase in
+            phrase.starts(with: trailingWords)
+        }
+
+        guard matchesHallucinationPrefix else {
+            return text
+        }
+
+        return String(text[..<clauseStart]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stripLeadingStandaloneHallucinationPhrase(from text: String) -> String {
+        var cleaned = text
+
+        while let range = cleaned.range(
+            of: leadingHallucinationPattern,
+            options: [.regularExpression, .caseInsensitive]
+        ) {
+            cleaned.removeSubrange(range)
+        }
+
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isKnownHallucinationPhrase(_ text: String) -> Bool {
+        knownHallucinationNormalizedPhrases.contains(normalizedPhrase(in: text))
+    }
+
+    private static func trailingClauseStart(in text: String) -> String.Index? {
+        guard !text.isEmpty else {
+            return nil
+        }
+
+        var startIndex = text.startIndex
+        if let sentenceBoundary = text.lastIndex(where: isSentenceTerminator) {
+            startIndex = text.index(after: sentenceBoundary)
+        }
+
+        while startIndex < text.endIndex {
+            let character = text[startIndex]
+            if character.isWhitespace || character.isPunctuation {
+                startIndex = text.index(after: startIndex)
+                continue
+            }
+            break
+        }
+
+        return startIndex < text.endIndex ? startIndex : nil
+    }
+
+    private static func normalizedWords(in text: String) -> [String] {
+        normalizedPhrase(in: text)
+            .split(separator: " ")
+            .map(String.init)
+    }
+
+    private static func normalizedPhrase(in text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isSentenceTerminator(_ character: Character) -> Bool {
+        character == "." || character == "!" || character == "?"
     }
 
     private static func prepareCommittedDelta(
@@ -310,7 +448,11 @@ struct LiveTranscriptionAccumulator {
         return true
     }
 
-    private static func removeTextualOverlap(existingText: String, incomingText: String) -> String {
+    private static func removeTextualOverlap(
+        existingText: String,
+        incomingText: String,
+        minimumWordOverlap: Int
+    ) -> String {
         let trimmedIncoming = incomingText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedIncoming.isEmpty, !existingText.isEmpty else {
             return trimmedIncoming
@@ -318,12 +460,14 @@ struct LiveTranscriptionAccumulator {
 
         let existingTokens = wordTokens(in: existingText)
         let incomingTokens = wordTokens(in: trimmedIncoming)
-        guard existingTokens.count >= 2, incomingTokens.count >= 2 else {
+        guard existingTokens.count >= minimumWordOverlap,
+              incomingTokens.count >= minimumWordOverlap
+        else {
             return trimmedIncoming
         }
 
         let maxOverlap = min(existingTokens.count, incomingTokens.count)
-        for overlapCount in stride(from: maxOverlap, through: 2, by: -1) {
+        for overlapCount in stride(from: maxOverlap, through: minimumWordOverlap, by: -1) {
             let existingSuffix = existingTokens.suffix(overlapCount).map(\.normalized)
             let incomingPrefix = incomingTokens.prefix(overlapCount).map(\.normalized)
             guard existingSuffix.elementsEqual(incomingPrefix) else {
@@ -402,6 +546,15 @@ struct LiveTranscriptionAccumulator {
         }
 
         return incomingRemainder
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        guard indices.contains(index) else {
+            return nil
+        }
+        return self[index]
     }
 }
 
@@ -620,7 +773,6 @@ class TranscriptionService: ObservableObject {
     private var engineLoadTask: Task<TranscriptionEngine, Error>?
     private var lastEngineLoadError: Error?
     private var liveWhisperSession: WhisperLiveHotkeySession?
-    private var liveInsertionSession: FocusedTextInsertionSession?
     private var pendingLiveSamples: [[Float]] = []
     private var lastAppliedLiveUpdate: LiveTranscriptionUpdate?
     
@@ -634,6 +786,30 @@ class TranscriptionService: ObservableObject {
 
     var isBatchTranscriptionActive: Bool {
         transcriptionTask != nil
+    }
+
+    nonisolated static func combineLivePreviewText(committedText: String, previewText: String) -> String {
+        let trimmedCommittedText = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPreviewText = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedCommittedText.isEmpty else {
+            return trimmedPreviewText
+        }
+
+        guard !trimmedPreviewText.isEmpty else {
+            return trimmedCommittedText
+        }
+
+        if let lastCommittedCharacter = trimmedCommittedText.last,
+           let firstPreviewCharacter = trimmedPreviewText.first,
+           !lastCommittedCharacter.isWhitespace,
+           !firstPreviewCharacter.isWhitespace,
+           !firstPreviewCharacter.isPunctuation
+        {
+            return "\(trimmedCommittedText) \(trimmedPreviewText)"
+        }
+
+        return "\(trimmedCommittedText)\(trimmedPreviewText)"
     }
     
     func cancelTranscription() {
@@ -726,7 +902,6 @@ class TranscriptionService: ObservableObject {
         }
 
         liveWhisperSession = session
-        liveInsertionSession = FocusedTextInsertionSession()
 
         let bufferedSamples = pendingLiveSamples
         pendingLiveSamples.removeAll()
@@ -752,8 +927,6 @@ class TranscriptionService: ObservableObject {
 
     func finishLiveWhisperHotkeySession() async -> LiveTranscriptionUpdate? {
         guard let liveWhisperSession else {
-            _ = liveInsertionSession?.finalizeReleaseInsertion()
-            liveInsertionSession = nil
             pendingLiveSamples.removeAll()
             isTranscribing = false
             currentSegment = ""
@@ -763,10 +936,8 @@ class TranscriptionService: ObservableObject {
 
         let update = await liveWhisperSession.finish()
         applyLiveUpdate(update)
-        _ = liveInsertionSession?.finalizeReleaseInsertion()
 
         self.liveWhisperSession = nil
-        liveInsertionSession = nil
         pendingLiveSamples.removeAll()
         currentSegment = ""
         isTranscribing = false
@@ -782,7 +953,6 @@ class TranscriptionService: ObservableObject {
         }
 
         liveWhisperSession = nil
-        liveInsertionSession = nil
         pendingLiveSamples.removeAll()
         lastAppliedLiveUpdate = nil
         currentSegment = ""
@@ -791,14 +961,20 @@ class TranscriptionService: ObservableObject {
         progress = 0.0
     }
     
-    func transcribeAudio(url: URL, settings: Settings) async throws -> String {
+    func transcribeAudio(
+        url: URL,
+        settings: Settings,
+        preserveDisplayedText: Bool = false
+    ) async throws -> String {
         await MainActor.run {
             self.progress = 0.0
             self.conversionProgress = 0.0
             self.isConverting = true
             self.isTranscribing = true
-            self.transcribedText = ""
-            self.currentSegment = ""
+            if !preserveDisplayedText {
+                self.transcribedText = ""
+                self.currentSegment = ""
+            }
             self.isCancelled = false
         }
         
@@ -897,10 +1073,6 @@ class TranscriptionService: ObservableObject {
         lastAppliedLiveUpdate = update
         transcribedText = update.committedText
         currentSegment = update.previewTail
-
-        if !update.committedDelta.isEmpty {
-            liveInsertionSession?.appendCommittedDelta(update.committedDelta)
-        }
 
         if update.isFinal {
             currentSegment = ""

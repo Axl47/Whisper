@@ -174,16 +174,16 @@ class FocusUtils {
         preferredSelectedRange: CFRange? = nil
     ) -> CFRange? {
         guard !text.isEmpty,
-              snapshot.frontmostApplicationPID == frontmostApplicationPID(),
-              let currentElement = getFocusedElement(),
-              CFEqual(currentElement, snapshot.element)
+              snapshot.frontmostApplicationPID == frontmostApplicationPID()
         else {
             return nil
         }
 
+        let targetElement = getFocusedElement() ?? snapshot.element
+
         var isValueSettable = DarwinBoolean(false)
         let settableResult = AXUIElementIsAttributeSettable(
-            snapshot.element,
+            targetElement,
             kAXValueAttribute as CFString,
             &isValueSettable
         )
@@ -192,10 +192,10 @@ class FocusUtils {
             return nil
         }
 
-        let currentValue = stringValue(for: snapshot.element) ?? ""
+        let currentValue = stringValue(for: targetElement) ?? ""
         let selectedRange = preferredSelectedRange
             ?? snapshot.selectedTextRange
-            ?? selectedTextRange(for: snapshot.element)
+            ?? selectedTextRange(for: targetElement)
             ?? CFRange(location: currentValue.utf16.count, length: 0)
 
         let nsValue = currentValue as NSString
@@ -205,7 +205,7 @@ class FocusUtils {
         let newValue = nsValue.replacingCharacters(in: insertionRange, with: text)
 
         let setValueResult = AXUIElementSetAttributeValue(
-            snapshot.element,
+            targetElement,
             kAXValueAttribute as CFString,
             newValue as CFString
         )
@@ -216,7 +216,7 @@ class FocusUtils {
 
         let insertedLength = (text as NSString).length
         let updatedRange = CFRange(location: safeLocation + insertedLength, length: 0)
-        _ = setSelectedTextRange(updatedRange, for: snapshot.element)
+        _ = setSelectedTextRange(updatedRange, for: targetElement)
 
         return updatedRange
     }
@@ -311,6 +311,122 @@ struct BufferedTextInsertionState {
     }
 }
 
+private enum LiveInsertionArtifactSanitizer {
+    private static let whisperControlTokenPattern = #"\[_[A-Z0-9]+(?:_[A-Z0-9]+)*_?\]"#
+    private static let knownHallucinationNormalizedPhrases = [
+        "ask for follow up changes",
+        "ask follow up changes",
+    ]
+    private static let leadingHallucinationPattern =
+        #"^\s*(?:the\s+)?ask(?:\s+for)?\s+follow(?:[- ]?up)\s+changes(?:[\s\p{P}]+|$)"#
+    private static let knownHallucinationWordPhrases = [
+        ["ask", "for", "follow", "up", "changes"],
+        ["ask", "follow", "up", "changes"],
+    ]
+    private static let minimumHallucinationPrefixWordCount = 2
+
+    static func sanitize(_ text: String) -> String {
+        guard !text.isEmpty else {
+            return text
+        }
+
+        var cleaned = text.replacingOccurrences(
+            of: whisperControlTokenPattern,
+            with: "",
+            options: .regularExpression
+        )
+
+        cleaned = stripLeadingStandaloneHallucinationPhrase(from: cleaned)
+        cleaned = stripTrailingStandaloneHallucinationFragment(from: cleaned)
+
+        if isKnownHallucinationPhrase(cleaned) {
+            return ""
+        }
+
+        return cleaned
+    }
+
+    private static func stripTrailingStandaloneHallucinationFragment(from text: String) -> String {
+        guard let clauseStart = trailingClauseStart(in: text) else {
+            return text
+        }
+
+        let trailingClause = String(text[clauseStart...])
+        let trailingWords = normalizedWords(in: trailingClause)
+
+        guard trailingWords.count >= minimumHallucinationPrefixWordCount else {
+            return text
+        }
+
+        let matchesHallucinationPrefix = knownHallucinationWordPhrases.contains { phrase in
+            phrase.starts(with: trailingWords)
+        }
+
+        guard matchesHallucinationPrefix else {
+            return text
+        }
+
+        return String(text[..<clauseStart]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stripLeadingStandaloneHallucinationPhrase(from text: String) -> String {
+        var cleaned = text
+
+        while let range = cleaned.range(
+            of: leadingHallucinationPattern,
+            options: [.regularExpression, .caseInsensitive]
+        ) {
+            cleaned.removeSubrange(range)
+        }
+
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isKnownHallucinationPhrase(_ text: String) -> Bool {
+        knownHallucinationNormalizedPhrases.contains(normalizedPhrase(in: text))
+    }
+
+    private static func trailingClauseStart(in text: String) -> String.Index? {
+        guard !text.isEmpty else {
+            return nil
+        }
+
+        var startIndex = text.startIndex
+        if let sentenceBoundary = text.lastIndex(where: isSentenceTerminator) {
+            startIndex = text.index(after: sentenceBoundary)
+        }
+
+        while startIndex < text.endIndex {
+            let character = text[startIndex]
+            if character.isWhitespace || character.isPunctuation {
+                startIndex = text.index(after: startIndex)
+                continue
+            }
+            break
+        }
+
+        return startIndex < text.endIndex ? startIndex : nil
+    }
+
+    private static func normalizedWords(in text: String) -> [String] {
+        normalizedPhrase(in: text)
+            .split(separator: " ")
+            .map(String.init)
+    }
+
+    private static func normalizedPhrase(in text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isSentenceTerminator(_ character: Character) -> Bool {
+        character == "." || character == "!" || character == "?"
+    }
+}
+
 @MainActor
 final class FocusedTextInsertionSession {
     private let snapshot: FocusedTextTargetSnapshot?
@@ -339,18 +455,29 @@ final class FocusedTextInsertionSession {
     }
 
     func appendCommittedDelta(_ text: String) {
+        if !state.liveInsertionEnabled {
+            state.recordCommittedDelta(text, insertedLive: false)
+            return
+        }
+
+        let sanitizedText = LiveInsertionArtifactSanitizer.sanitize(text)
+        guard !sanitizedText.isEmpty else {
+            return
+        }
+
         let insertedRange: CFRange?
         if let snapshot, state.liveInsertionEnabled {
-            insertedRange = liveInserter(text, snapshot, nextSelectedTextRange)
+            insertedRange = liveInserter(sanitizedText, snapshot, nextSelectedTextRange)
         } else {
             insertedRange = nil
         }
 
         if let insertedRange {
             nextSelectedTextRange = insertedRange
+            state.recordCommittedDelta(sanitizedText, insertedLive: true)
+        } else {
+            state.recordCommittedDelta(text, insertedLive: false)
         }
-
-        state.recordCommittedDelta(text, insertedLive: insertedRange != nil)
     }
 
     @discardableResult
@@ -359,8 +486,13 @@ final class FocusedTextInsertionSession {
             return nil
         }
 
-        releaseInserter(text)
-        return text
+        let sanitizedText = LiveInsertionArtifactSanitizer.sanitize(text)
+        guard !sanitizedText.isEmpty else {
+            return nil
+        }
+
+        releaseInserter(sanitizedText)
+        return sanitizedText
     }
 }
 

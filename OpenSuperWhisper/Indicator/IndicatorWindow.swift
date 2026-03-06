@@ -81,7 +81,10 @@ class IndicatorViewModel: ObservableObject {
     }
 
     var liveTranscriptPreview: String {
-        (liveCommittedText + livePreviewText).trimmingCharacters(in: .whitespacesAndNewlines)
+        TranscriptionService.combineLivePreviewText(
+            committedText: liveCommittedText,
+            previewText: livePreviewText
+        )
     }
     
     func showBusyMessage() {
@@ -163,9 +166,11 @@ class IndicatorViewModel: ObservableObject {
                     do {
                         let text = try await self.transcriptionService.transcribeAudio(
                             url: tempURL,
-                            settings: Settings()
+                            settings: Settings(),
+                            preserveDisplayedText: true
                         )
                         try await self.persistCompletedRecording(from: tempURL, transcription: text)
+                        self.insertText(text)
                     } catch {
                         print("Error finalizing live Whisper audio: \(error)")
                         try? FileManager.default.removeItem(at: tempURL)

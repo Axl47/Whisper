@@ -1258,11 +1258,11 @@ final class LiveTranscriptionAccumulatorTests: XCTestCase {
 
         XCTAssertEqual(
             update.committedText,
-            "Okay, so this is a test recording so I'm not repeating anything. We can see why it is repeated"
+            "Okay, so this is a test recording so I'm not repeating anything. We can see why it is"
         )
-        XCTAssertEqual(update.committedDelta, ". We can see why it is repeated")
-        XCTAssertEqual(update.previewTail, "")
-        XCTAssertEqual(update.committedEndTime, 8.48)
+        XCTAssertEqual(update.committedDelta, " anything. We can see why it is")
+        XCTAssertEqual(update.previewTail, " repeated")
+        XCTAssertEqual(update.committedEndTime, 7.5)
     }
 
     func testApply_stripsWhisperControlTokensAndSilenceHallucinationPhrases() {
@@ -1283,6 +1283,165 @@ final class LiveTranscriptionAccumulatorTests: XCTestCase {
         XCTAssertEqual(update.committedText, "I'm talking right now")
         XCTAssertEqual(update.committedDelta, "I'm talking right now")
         XCTAssertEqual(update.previewTail, "")
+    }
+
+    func testApply_stripsOnlyTrailingStandaloneFollowUpHallucination() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        let update = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "However, there's the ask for follow-up changes being appended at the end. Ask for follow-up changes",
+                    startTime: 0.0,
+                    endTime: 4.0
+                ),
+            ],
+            liveEdge: 6.0,
+            isFinal: false
+        )
+
+        XCTAssertEqual(
+            update.committedText,
+            "However, there's the ask for follow-up changes being appended at the end."
+        )
+        XCTAssertEqual(
+            update.committedDelta,
+            "However, there's the ask for follow-up changes being appended at the end."
+        )
+        XCTAssertEqual(update.previewTail, "")
+    }
+
+    func testApply_stripsTrailingStandaloneHallucinationFragmentAcrossChunkBoundaries() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        let firstUpdate = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "However, there's the ask for follow-up changes being appended at the end. Ask for",
+                    startTime: 0.0,
+                    endTime: 4.0
+                ),
+            ],
+            liveEdge: 6.0,
+            isFinal: false
+        )
+
+        XCTAssertEqual(
+            firstUpdate.committedText,
+            "However, there's the ask for follow-up changes being appended at the end."
+        )
+        XCTAssertEqual(
+            firstUpdate.committedDelta,
+            "However, there's the ask for follow-up changes being appended at the end."
+        )
+        XCTAssertEqual(firstUpdate.previewTail, "")
+
+        let secondUpdate = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "However, there's the ask for follow-up changes being appended at the end. Ask for follow-up changes",
+                    startTime: 0.0,
+                    endTime: 5.0
+                ),
+            ],
+            liveEdge: 7.0,
+            isFinal: false
+        )
+
+        XCTAssertEqual(
+            secondUpdate.committedText,
+            "However, there's the ask for follow-up changes being appended at the end."
+        )
+        XCTAssertEqual(secondUpdate.committedDelta, "")
+        XCTAssertEqual(secondUpdate.previewTail, "")
+    }
+
+    func testApply_defersTrailingPartialTokenUntilWordBoundaryArrives() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        let firstUpdate = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "halluc",
+                    startTime: 0.0,
+                    endTime: 1.6,
+                    tokens: [
+                        timedToken(" halluc", startTime: 0.0, endTime: 1.6),
+                    ]
+                ),
+            ],
+            liveEdge: 3.5,
+            isFinal: false
+        )
+
+        XCTAssertEqual(firstUpdate.committedText, "")
+        XCTAssertEqual(firstUpdate.committedDelta, "")
+        XCTAssertEqual(firstUpdate.previewTail, "halluc")
+
+        let secondUpdate = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "hallucinations for repetitions",
+                    startTime: 0.0,
+                    endTime: 4.5,
+                    tokens: [
+                        timedToken(" halluc", startTime: 0.0, endTime: 1.6),
+                        timedToken("inations", startTime: 1.6, endTime: 2.3),
+                        timedToken(" for", startTime: 2.3, endTime: 3.0),
+                        timedToken(" repetitions", startTime: 3.0, endTime: 4.5),
+                    ]
+                ),
+            ],
+            liveEdge: 5.8,
+            isFinal: false
+        )
+
+        XCTAssertEqual(secondUpdate.committedText, "hallucinations")
+        XCTAssertEqual(secondUpdate.committedDelta, "hallucinations")
+        XCTAssertEqual(secondUpdate.previewTail, " for repetitions")
+    }
+
+    func testApply_tokenPathStripsSingleWordBoundaryOverlap() {
+        var accumulator = LiveTranscriptionAccumulator(addSpaceAfterSentence: false)
+
+        _ = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "I'm just",
+                    startTime: 0.0,
+                    endTime: 2.0,
+                    tokens: [
+                        timedToken(" I'm", startTime: 0.0, endTime: 1.0),
+                        timedToken(" just", startTime: 1.0, endTime: 2.0),
+                        timedToken(" speaking", startTime: 2.0, endTime: 3.0),
+                    ]
+                ),
+            ],
+            liveEdge: 3.2,
+            isFinal: false
+        )
+
+        let update = accumulator.apply(
+            segments: [
+                WhisperSegmentResult(
+                    text: "just speaking and hopefully",
+                    startTime: 1.7,
+                    endTime: 5.0,
+                    tokens: [
+                        timedToken(" just", startTime: 1.7, endTime: 2.3),
+                        timedToken(" speaking", startTime: 2.3, endTime: 3.2),
+                        timedToken(" and", startTime: 3.2, endTime: 4.0),
+                        timedToken(" hopefully", startTime: 4.0, endTime: 5.0),
+                    ]
+                ),
+            ],
+            liveEdge: 6.8,
+            isFinal: false
+        )
+
+        XCTAssertEqual(update.committedText, "just speaking and")
+        XCTAssertEqual(update.committedDelta, "just speaking and")
+        XCTAssertEqual(update.previewTail, " hopefully")
     }
 }
 
@@ -1319,8 +1478,32 @@ final class BufferedTextInsertionStateTests: XCTestCase {
     }
 }
 
+final class LiveTranscriptPreviewFormattingTests: XCTestCase {
+    func testCombineLivePreviewText_insertsSingleBoundarySpaceBetweenCommittedAndPreview() {
+        let combined = TranscriptionService.combineLivePreviewText(
+            committedText: "I'm testing to see if",
+            previewText: "the follow-up changes line appears"
+        )
+
+        XCTAssertEqual(combined, "I'm testing to see if the follow-up changes line appears")
+    }
+
+    func testCombineLivePreviewText_avoidsExtraSpaceBeforePunctuation() {
+        let combined = TranscriptionService.combineLivePreviewText(
+            committedText: "Hello",
+            previewText: ", world"
+        )
+
+        XCTAssertEqual(combined, "Hello, world")
+    }
+}
+
 @MainActor
 final class FocusedTextInsertionSessionTests: XCTestCase {
+    private final class StringCaptureBox: @unchecked Sendable {
+        var value: String?
+    }
+
     func testAppendCommittedDelta_reusesLastInsertedRangeForLaterWrites() {
         let snapshot = FocusedTextTargetSnapshot(
             frontmostApplicationPID: 1,
@@ -1348,5 +1531,34 @@ final class FocusedTextInsertionSessionTests: XCTestCase {
         XCTAssertEqual(observedRanges.count, 2)
         XCTAssertEqual(observedRanges[0]?.location, 12)
         XCTAssertEqual(observedRanges[1]?.location, 17)
+    }
+
+    func testFinalizeReleaseInsertion_stripsTrailingStandaloneHallucinationFragment() {
+        let insertedText = StringCaptureBox()
+
+        let session = FocusedTextInsertionSession(
+            snapshot: nil,
+            releaseInserter: { insertedText.value = $0 },
+            liveInserter: { _, _, _ in
+                XCTFail("Live inserter should not be used when snapshot is unavailable")
+                return nil
+            }
+        )
+
+        session.appendCommittedDelta(
+            "However, there's the ask for follow-up changes being appended at the end. Ask for"
+        )
+        session.appendCommittedDelta(" follow-up changes")
+
+        let finalizedText = session.finalizeReleaseInsertion()
+
+        XCTAssertEqual(
+            finalizedText,
+            "However, there's the ask for follow-up changes being appended at the end."
+        )
+        XCTAssertEqual(
+            insertedText.value,
+            "However, there's the ask for follow-up changes being appended at the end."
+        )
     }
 }

@@ -49,9 +49,9 @@ struct WhisperTimedToken: Equatable, Sendable {
 
 class WhisperEngine: TranscriptionEngine {
     private static let whisperControlTokenPattern = #"\[_[A-Z0-9]+(?:_[A-Z0-9]+)*_?\]"#
-    private static let knownHallucinationPhrases = [
-        "ask for follow-up changes",
+    private static let knownHallucinationNormalizedPhrases = [
         "ask for follow up changes",
+        "ask follow up changes",
     ]
 
     var engineName: String { "Whisper" }
@@ -399,13 +399,20 @@ class WhisperEngine: TranscriptionEngine {
             options: .regularExpression
         )
 
-        for phrase in Self.knownHallucinationPhrases {
-            while let range = cleaned.range(of: phrase, options: [.caseInsensitive]) {
-                cleaned.removeSubrange(range)
-            }
+        if Self.isKnownHallucinationPhrase(cleaned) {
+            return ""
         }
 
         return cleaned
+    }
+
+    private static func isKnownHallucinationPhrase(_ text: String) -> Bool {
+        let normalized = text
+            .lowercased()
+            .replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return knownHallucinationNormalizedPhrases.contains(normalized)
     }
 
     private func normalizedTimeRange(start: Double, end: Double) -> (Double, Double) {

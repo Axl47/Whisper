@@ -1,10 +1,10 @@
 # Working List
 
 ## Pending
-- [ ] Run manual in-app verification for live streaming behavior and fallback insertion
+- [ ] Run manual in-app verification for popup-only live preview and single final paste
 
 ## In Progress
-- [~] Verify the live insertion-range fix and transcript sanitization changes in-app
+- [~] Verify the popup-only live preview behavior in-app
 
 ## Done
 - [x] Review the existing hotkey, recorder, transcription, and insertion flows
@@ -21,3 +21,8 @@
 - [x] Validate the token-based live dedup fix with targeted tests and a local build
 - [x] Preserve the live insertion range across AX appends so later chunks stay at the caret tail
 - [x] Strip Whisper control tokens and the known silence hallucination phrase from live transcript assembly
+- [x] Commit live token output only at safe word boundaries to avoid partial-word artifacts and single-word overlap repeats
+- [x] Refactor the Whisper hotkey flow so rolling updates stay inside the popup and the app receives one final paste from the batch transcript
+- [x] Preserve the last popup preview while the post-release batch decode runs
+- [x] Add popup preview boundary-formatting coverage and re-run focused tests plus a full build
+- [x] Update the living docs for the popup-only live preview behavior
