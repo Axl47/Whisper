@@ -462,18 +462,6 @@ struct IndicatorWindow: View {
             : Color.white.opacity(0.12)
     }
 
-    private var specularHighlight: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color.white.opacity(colorScheme == .dark ? 0.24 : 0.32),
-                Color.white.opacity(colorScheme == .dark ? 0.10 : 0.16),
-                Color.clear
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
-
     private var ambientWash: LinearGradient {
         LinearGradient(
             colors: [
@@ -526,22 +514,14 @@ struct IndicatorWindow: View {
                         .strokeBorder(highlightStrokeColor, lineWidth: 0.75)
                 }
                 .overlay {
-                    if let workflowAccentColor {
-                        RoundedRectangle(cornerRadius: outerCornerRadius)
-                            .strokeBorder(workflowAccentColor.opacity(0.95), lineWidth: 2.4)
-                            .shadow(color: workflowAccentColor.opacity(0.50), radius: 22)
-                    }
+                    workflowAccentOverlay(
+                        cornerRadius: outerCornerRadius,
+                        strokeLineWidth: 2.8,
+                        haloBlur: 9
+                    )
                 }
                 .overlay(alignment: .top) {
-                    RoundedRectangle(cornerRadius: outerCornerRadius)
-                        .fill(specularHighlight)
-                        .frame(height: 36)
-                        .padding(1)
-                        .blur(radius: 1.25)
-                        .mask(
-                            RoundedRectangle(cornerRadius: outerCornerRadius)
-                                .padding(1)
-                        )
+                    outerTopEdgeHighlight
                 }
                 .shadow(color: shadowColor, radius: 20, x: 0, y: 10)
         } else {
@@ -563,22 +543,14 @@ struct IndicatorWindow: View {
                         .strokeBorder(highlightStrokeColor, lineWidth: 0.75)
                 }
                 .overlay {
-                    if let workflowAccentColor {
-                        RoundedRectangle(cornerRadius: outerCornerRadius)
-                            .strokeBorder(workflowAccentColor.opacity(0.92), lineWidth: 2.2)
-                            .shadow(color: workflowAccentColor.opacity(0.44), radius: 18)
-                    }
+                    workflowAccentOverlay(
+                        cornerRadius: outerCornerRadius,
+                        strokeLineWidth: 2.6,
+                        haloBlur: 7
+                    )
                 }
                 .overlay(alignment: .top) {
-                    RoundedRectangle(cornerRadius: outerCornerRadius)
-                        .fill(specularHighlight)
-                        .frame(height: 34)
-                        .padding(1)
-                        .blur(radius: 1.5)
-                        .mask(
-                            RoundedRectangle(cornerRadius: outerCornerRadius)
-                                .padding(1)
-                        )
+                    outerTopEdgeHighlight
                 }
                 .shadow(color: shadowColor, radius: 16, x: 0, y: 8)
         }
@@ -630,6 +602,41 @@ struct IndicatorWindow: View {
                         .padding(.top, 1)
                 }
         }
+    }
+
+    @ViewBuilder
+    private func workflowAccentOverlay(
+        cornerRadius: CGFloat,
+        strokeLineWidth: CGFloat,
+        haloBlur: CGFloat
+    ) -> some View {
+        if let workflowAccentColor {
+            let glowOpacity = colorScheme == .dark ? 0.50 : 0.38
+            let secondaryOpacity = colorScheme == .dark ? 0.62 : 0.48
+            let primaryOpacity = colorScheme == .dark ? 0.98 : 0.92
+
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(
+                    workflowAccentColor.opacity(secondaryOpacity),
+                    lineWidth: strokeLineWidth + 2.0
+                )
+                .shadow(color: workflowAccentColor.opacity(glowOpacity), radius: haloBlur, x: 0, y: 0)
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .strokeBorder(
+                            workflowAccentColor.opacity(primaryOpacity),
+                            lineWidth: strokeLineWidth
+                        )
+                }
+        }
+    }
+
+    private var outerTopEdgeHighlight: some View {
+        Capsule()
+            .fill(Color.white.opacity(colorScheme == .dark ? 0.12 : 0.16))
+            .frame(height: 1)
+            .padding(.horizontal, 18)
+            .padding(.top, 2)
     }
 
     var body: some View {
