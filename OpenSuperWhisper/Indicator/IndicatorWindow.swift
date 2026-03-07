@@ -36,6 +36,7 @@ class IndicatorViewModel: ObservableObject {
     private let transcriptionService: TranscriptionService
     private let transcriptionQueue: TranscriptionQueue
     private let liveRecordingCoordinator: LiveRecordingCoordinator
+    private var shouldPreserveWorkflowAccentDuringDecoding = false
     
     init(liveRecordingCoordinator: LiveRecordingCoordinator? = nil) {
         self.transcriptionService = TranscriptionService.shared
@@ -106,6 +107,7 @@ class IndicatorViewModel: ObservableObject {
     
     func startRecording() {
         clearWorkflowPresentation()
+        shouldPreserveWorkflowAccentDuringDecoding = false
 
         if isTranscriptionBusy {
             showBusyMessage()
@@ -160,6 +162,7 @@ class IndicatorViewModel: ObservableObject {
             return
         }
         
+        shouldPreserveWorkflowAccentDuringDecoding = workflowAccentColorHex != nil
         state = .decoding
         resultMessage = nil
 
@@ -301,6 +304,7 @@ class IndicatorViewModel: ObservableObject {
     private func clearWorkflowPresentation() {
         resultMessage = nil
         workflowAccentColorHex = nil
+        shouldPreserveWorkflowAccentDuringDecoding = false
     }
 
     private func updateWorkflowAccentForLivePreview() {
@@ -309,6 +313,9 @@ class IndicatorViewModel: ObservableObject {
         }
 
         guard transcriptionService.isLiveWhisperSessionActive else {
+            if shouldPreserveWorkflowAccentDuringDecoding && state == .decoding {
+                return
+            }
             workflowAccentColorHex = nil
             return
         }
@@ -516,7 +523,7 @@ struct IndicatorWindow: View {
                 .overlay {
                     workflowAccentOverlay(
                         cornerRadius: outerCornerRadius,
-                        strokeLineWidth: 2.8,
+                        strokeLineWidth: 2.0,
                         haloBlur: 9
                     )
                 }
@@ -545,7 +552,7 @@ struct IndicatorWindow: View {
                 .overlay {
                     workflowAccentOverlay(
                         cornerRadius: outerCornerRadius,
-                        strokeLineWidth: 2.6,
+                        strokeLineWidth: 1.8,
                         haloBlur: 7
                     )
                 }
@@ -614,20 +621,24 @@ struct IndicatorWindow: View {
             let glowOpacity = colorScheme == .dark ? 0.50 : 0.38
             let secondaryOpacity = colorScheme == .dark ? 0.62 : 0.48
             let primaryOpacity = colorScheme == .dark ? 0.98 : 0.92
+            let outerInset = strokeLineWidth * 0.55
 
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .strokeBorder(
-                    workflowAccentColor.opacity(secondaryOpacity),
-                    lineWidth: strokeLineWidth + 2.0
-                )
-                .shadow(color: workflowAccentColor.opacity(glowOpacity), radius: haloBlur, x: 0, y: 0)
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .strokeBorder(
-                            workflowAccentColor.opacity(primaryOpacity),
-                            lineWidth: strokeLineWidth
-                        )
-                }
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius + outerInset)
+                    .stroke(
+                        workflowAccentColor.opacity(secondaryOpacity),
+                        lineWidth: strokeLineWidth + 2.0
+                    )
+                    .padding(-outerInset)
+
+                RoundedRectangle(cornerRadius: cornerRadius + outerInset)
+                    .stroke(
+                        workflowAccentColor.opacity(primaryOpacity),
+                        lineWidth: strokeLineWidth
+                    )
+                    .padding(-outerInset)
+            }
+            .shadow(color: workflowAccentColor.opacity(glowOpacity), radius: haloBlur, x: 0, y: 0)
         }
     }
 
@@ -637,6 +648,14 @@ struct IndicatorWindow: View {
             .frame(height: 1)
             .padding(.horizontal, 18)
             .padding(.top, 2)
+    }
+
+    private var overlayWidth: CGFloat {
+        viewModel.liveTranscriptPreview.isEmpty ? 250 : 420
+    }
+
+    private var overlayOverflowPadding: CGFloat {
+        12
     }
 
     var body: some View {
@@ -649,7 +668,8 @@ struct IndicatorWindow: View {
                 applyOuterSurface(to: overlayContent)
             }
         }
-        .frame(width: viewModel.liveTranscriptPreview.isEmpty ? 250 : 420)
+        .frame(width: overlayWidth)
+        .padding(overlayOverflowPadding)
         .scaleEffect(viewModel.isVisible ? 1 : 0.5)
         .offset(y: viewModel.isVisible ? 0 : 20)
         .opacity(viewModel.isVisible ? 1 : 0)
