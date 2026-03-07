@@ -141,6 +141,14 @@ class SettingsViewModel: ObservableObject {
             AppPreferences.shared.addSpaceAfterSentence = addSpaceAfterSentence
         }
     }
+
+    @Published var voiceWorkflowsEnabled: Bool {
+        didSet {
+            AppPreferences.shared.voiceWorkflowsEnabled = voiceWorkflowsEnabled
+        }
+    }
+
+    @Published var workflows: [VoiceWorkflow]
     
     init() {
         let prefs = AppPreferences.shared
@@ -161,6 +169,8 @@ class SettingsViewModel: ObservableObject {
         self.modifierOnlyHotkey = ModifierKey(rawValue: prefs.modifierOnlyHotkey) ?? .none
         self.holdToRecord = prefs.holdToRecord
         self.addSpaceAfterSentence = prefs.addSpaceAfterSentence
+        self.voiceWorkflowsEnabled = prefs.voiceWorkflowsEnabled
+        self.workflows = prefs.voiceWorkflows
         
         if let savedPath = prefs.selectedWhisperModelPath ?? prefs.selectedModelPath {
             self.selectedModelURL = URL(fileURLWithPath: savedPath)
@@ -205,6 +215,37 @@ class SettingsViewModel: ObservableObject {
             selectedModelURL = availableModels.first
         }
         initializeDownloadableModels()
+    }
+
+    func addWorkflow(_ workflow: VoiceWorkflow) {
+        workflows.append(workflow)
+        saveWorkflows()
+    }
+
+    func updateWorkflow(_ workflow: VoiceWorkflow) {
+        guard let index = workflows.firstIndex(where: { $0.id == workflow.id }) else {
+            return
+        }
+        workflows[index] = workflow
+        saveWorkflows()
+    }
+
+    func deleteWorkflows(atOffsets offsets: IndexSet) {
+        workflows.remove(atOffsets: offsets)
+        saveWorkflows()
+    }
+
+    func deleteWorkflow(id: UUID) {
+        workflows.removeAll { $0.id == id }
+        saveWorkflows()
+    }
+
+    func saveWorkflows() {
+        AppPreferences.shared.voiceWorkflows = workflows
+    }
+
+    func validationErrors(for workflow: VoiceWorkflow) -> [VoiceWorkflowValidationError] {
+        VoiceWorkflowValidator.validate(workflow: workflow, duringSaveAgainst: workflows)
     }
     
     @MainActor
@@ -524,6 +565,7 @@ struct SettingsView: View {
     @State private var isRecordingNewShortcut = false
     @State private var selectedTab = 0
     @State private var previousModelURL: URL?
+    @State private var workflowEditorDraft: VoiceWorkflowDraft?
     
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -554,9 +596,15 @@ struct SettingsView: View {
                     Label("Advanced", systemImage: "gear")
                 }
                 .tag(3)
+
+            workflowsSettings
+                .tabItem {
+                    Label("Workflows", systemImage: "bolt.horizontal.circle")
+                }
+                .tag(4)
             }
         .padding()
-        .frame(width: 550)
+        .frame(width: 620)
         .background(Color(.windowBackgroundColor))
         .safeAreaInset(edge: .bottom) {
             HStack {
@@ -608,6 +656,21 @@ struct SettingsView: View {
                 Task { @MainActor in
                     TranscriptionService.shared.reloadModel(with: modelPath)
                 }
+            }
+        }
+        .sheet(item: $workflowEditorDraft) { draft in
+            VoiceWorkflowEditorSheet(
+                draft: draft,
+                existingWorkflows: viewModel.workflows
+            ) { savedWorkflow in
+                if viewModel.workflows.contains(where: { $0.id == savedWorkflow.id }) {
+                    viewModel.updateWorkflow(savedWorkflow)
+                } else {
+                    viewModel.addWorkflow(savedWorkflow)
+                }
+                workflowEditorDraft = nil
+            } onCancel: {
+                workflowEditorDraft = nil
             }
         }
     }
@@ -1047,6 +1110,86 @@ struct SettingsView: View {
                 .background(Color(.controlBackgroundColor).opacity(0.3))
                 .cornerRadius(12)
             }
+        }
+        .padding()
+    }
+
+    private var workflowsSettings: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                WorkflowSettingsCard {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Voice Workflows")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+
+                        Text("Workflows run only for completed live microphone recordings. Imported files and queued transcriptions always stay as normal transcripts.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Enable Voice Workflows")
+                                    .font(.subheadline.weight(.medium))
+                                Text("When enabled, the app checks live transcripts for workflow aliases before paste delivery.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: $viewModel.voiceWorkflowsEnabled)
+                                .toggleStyle(SwitchToggleStyle(tint: Color.accentColor))
+                                .labelsHidden()
+                        }
+                    }
+                }
+
+                WorkflowSettingsCard {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Configured Workflows")
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text("Aliases are matched from the start of the final transcript. The remaining text becomes the `{text}` payload.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                workflowEditorDraft = VoiceWorkflowDraft()
+                            } label: {
+                                Label("Add Workflow", systemImage: "plus")
+                            }
+                            .workflowActionButtonStyle()
+                        }
+
+                        if viewModel.workflows.isEmpty {
+                            Text("No workflows configured yet.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 12)
+                        } else {
+                            VStack(spacing: 12) {
+                                ForEach(viewModel.workflows) { workflow in
+                                    WorkflowSummaryCard(
+                                        workflow: workflow,
+                                        onEdit: {
+                                            workflowEditorDraft = VoiceWorkflowDraft(workflow: workflow)
+                                        },
+                                        onDelete: {
+                                            viewModel.deleteWorkflow(id: workflow.id)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             .padding()
         }
     }
@@ -1456,6 +1599,447 @@ struct ModelDownloadItemView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage)
+        }
+    }
+}
+
+private struct VoiceWorkflowDraft: Identifiable {
+    let id: UUID
+    var name: String
+    var isEnabled: Bool
+    var aliases: [String]
+    var launchMode: VoiceWorkflowLaunchMode
+    var executablePath: String
+    var arguments: [String]
+    var shellCommand: String
+    var accentColorHex: String?
+
+    init() {
+        self.id = UUID()
+        self.name = ""
+        self.isEnabled = true
+        self.aliases = [""]
+        self.launchMode = .executable
+        self.executablePath = ""
+        self.arguments = ["{text}"]
+        self.shellCommand = #"printf '%s\n' "$OPENSUPERWHISPER_WORKFLOW_TEXT""#
+        self.accentColorHex = nil
+    }
+
+    init(workflow: VoiceWorkflow) {
+        self.id = workflow.id
+        self.name = workflow.name
+        self.isEnabled = workflow.isEnabled
+        self.aliases = workflow.aliases.isEmpty ? [""] : workflow.aliases
+        self.launchMode = workflow.launchMode
+        self.executablePath = workflow.executablePath
+        self.arguments = workflow.arguments.isEmpty ? ["{text}"] : workflow.arguments
+        self.shellCommand = workflow.shellCommand
+        self.accentColorHex = workflow.accentColorHex
+    }
+
+    func workflow(accentColorHex: String?) -> VoiceWorkflow {
+        VoiceWorkflow(
+            id: id,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            isEnabled: isEnabled,
+            aliases: aliases.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) },
+            launchMode: launchMode,
+            executablePath: executablePath.trimmingCharacters(in: .whitespacesAndNewlines),
+            arguments: arguments,
+            shellCommand: shellCommand.trimmingCharacters(in: .whitespacesAndNewlines),
+            accentColorHex: accentColorHex
+        )
+    }
+}
+
+private struct WorkflowSettingsCard<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: 12) {
+                    content
+                        .padding(18)
+                        .glassEffect(.regular.tint(Color.white.opacity(0.18)), in: .rect(cornerRadius: 22))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 22)
+                                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75)
+                        }
+                }
+            } else {
+                content
+                    .padding(18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 22)
+                            .fill(Color(.controlBackgroundColor).opacity(0.42))
+                            .background {
+                                RoundedRectangle(cornerRadius: 22)
+                                    .fill(.ultraThinMaterial)
+                            }
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 22)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
+                    }
+            }
+        }
+    }
+}
+
+private struct WorkflowSummaryCard: View {
+    let workflow: VoiceWorkflow
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    private var accentColor: Color? {
+        workflow.accentColor
+    }
+
+    var body: some View {
+        WorkflowSettingsCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text(workflow.name.isEmpty ? "Untitled Workflow" : workflow.name)
+                                .font(.headline)
+                            if !workflow.isEnabled {
+                                Text("Disabled")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.secondary.opacity(0.12))
+                                    .clipShape(Capsule())
+                            }
+                            if let accentColor {
+                                Circle()
+                                    .fill(accentColor)
+                                    .frame(width: 10, height: 10)
+                            }
+                        }
+
+                        Text(
+                            workflow.launchMode == .shell
+                                ? "Shell Command"
+                                : (workflow.executablePath.isEmpty ? "No executable selected" : URL(fileURLWithPath: workflow.executablePath).lastPathComponent)
+                        )
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 10) {
+                        Button("Edit", action: onEdit)
+                            .workflowActionButtonStyle(prominent: true)
+                        Button("Delete", role: .destructive, action: onDelete)
+                            .workflowActionButtonStyle()
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Aliases")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.secondary)
+
+                    Text(workflow.aliases.joined(separator: ", "))
+                        .font(.subheadline)
+                        .foregroundColor(.primary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(workflow.launchMode == .shell ? "Shell Command" : "Arguments")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.secondary)
+                    Text(
+                        workflow.launchMode == .shell
+                            ? workflow.shellCommand
+                            : workflow.arguments.joined(separator: " ")
+                    )
+                        .font(.caption.monospaced())
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+}
+
+private struct VoiceWorkflowEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: VoiceWorkflowDraft
+    @State private var accentColorEnabled: Bool
+    @State private var accentColor: Color
+
+    let existingWorkflows: [VoiceWorkflow]
+    let onSave: (VoiceWorkflow) -> Void
+    let onCancel: () -> Void
+
+    init(
+        draft: VoiceWorkflowDraft,
+        existingWorkflows: [VoiceWorkflow],
+        onSave: @escaping (VoiceWorkflow) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _draft = State(initialValue: draft)
+        let initialColor = draft.accentColorHex.flatMap(Color.init(workflowHex:)) ?? .accentColor
+        _accentColor = State(initialValue: initialColor)
+        _accentColorEnabled = State(initialValue: draft.accentColorHex != nil)
+        self.existingWorkflows = existingWorkflows
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    private var workflowForValidation: VoiceWorkflow {
+        draft.workflow(accentColorHex: accentColorEnabled ? accentColor.workflowHexString() : nil)
+    }
+
+    private var validationErrors: [VoiceWorkflowValidationError] {
+        VoiceWorkflowValidator.validate(workflow: workflowForValidation, duringSaveAgainst: existingWorkflows)
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack {
+                Text(draft.name.isEmpty ? "New Workflow" : draft.name)
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    WorkflowSettingsCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Text("General")
+                                    .font(.headline)
+                                Spacer()
+                                Toggle("Enabled", isOn: $draft.isEnabled)
+                                    .toggleStyle(.switch)
+                            }
+
+                            TextField("Workflow Name", text: $draft.name)
+
+                            Picker("Runner", selection: $draft.launchMode) {
+                                ForEach(VoiceWorkflowLaunchMode.allCases, id: \.self) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text("Popup Accent")
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Toggle("Use Accent", isOn: $accentColorEnabled)
+                                        .toggleStyle(.switch)
+                                }
+
+                                if accentColorEnabled {
+                                    ColorPicker("Accent Color", selection: $accentColor, supportsOpacity: true)
+                                }
+                            }
+                        }
+                    }
+
+                    WorkflowSettingsCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Text("Aliases")
+                                    .font(.headline)
+                                Spacer()
+                                Button {
+                                    draft.aliases.append("")
+                                } label: {
+                                    Label("Add Alias", systemImage: "plus")
+                                }
+                                .workflowActionButtonStyle()
+                            }
+
+                            ForEach(Array(draft.aliases.indices), id: \.self) { index in
+                                HStack {
+                                    TextField("Alias", text: Binding(
+                                        get: { draft.aliases[index] },
+                                        set: { draft.aliases[index] = $0 }
+                                    ))
+                                    Button {
+                                        if draft.aliases.count > 1 {
+                                            draft.aliases.remove(at: index)
+                                        } else {
+                                            draft.aliases[index] = ""
+                                        }
+                                    } label: {
+                                        Image(systemName: "minus.circle.fill")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+
+                    if draft.launchMode == .executable {
+                        WorkflowSettingsCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                HStack {
+                                    Text("Executable")
+                                        .font(.headline)
+                                    Spacer()
+                                    Button("Choose…") {
+                                        chooseExecutable()
+                                    }
+                                    .workflowActionButtonStyle()
+                                }
+
+                                TextField("/absolute/path/to/executable", text: $draft.executablePath)
+                                    .textSelection(.enabled)
+                            }
+                        }
+
+                        WorkflowSettingsCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                HStack {
+                                    Text("Arguments")
+                                        .font(.headline)
+                                    Spacer()
+                                    Button {
+                                        draft.arguments.append("")
+                                    } label: {
+                                        Label("Add Argument", systemImage: "plus")
+                                    }
+                                    .workflowActionButtonStyle()
+                                }
+
+                                ForEach(Array(draft.arguments.indices), id: \.self) { index in
+                                    HStack {
+                                        TextField("Argument", text: Binding(
+                                            get: { draft.arguments[index] },
+                                            set: { draft.arguments[index] = $0 }
+                                        ))
+                                        Button {
+                                            if draft.arguments.count > 1 {
+                                                draft.arguments.remove(at: index)
+                                            } else {
+                                                draft.arguments[index] = ""
+                                            }
+                                        } label: {
+                                            Image(systemName: "minus.circle.fill")
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        WorkflowSettingsCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("Shell Command")
+                                    .font(.headline)
+
+                                TextEditor(text: $draft.shellCommand)
+                                    .font(.system(.body, design: .monospaced))
+                                    .frame(minHeight: 120)
+                                    .padding(8)
+                                    .background(Color(.textBackgroundColor).opacity(0.5))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Payload Helpers")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(.secondary)
+                                    Text("Use {text} for shell-escaped insertion, or $" + VoiceWorkflowExecutor.payloadEnvironmentKey + " inside quotes.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(#"Example: obsidian append content="$OPENSUPERWHISPER_WORKFLOW_TEXT" --active"#)
+                                        .font(.caption.monospaced())
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+
+                    if !validationErrors.isEmpty {
+                        WorkflowSettingsCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Fix Before Saving")
+                                    .font(.headline)
+                                    .foregroundColor(.orange)
+                                ForEach(validationErrors, id: \.self) { error in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundColor(.orange)
+                                        Text(error.localizedDescription)
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            HStack {
+                Button("Cancel") {
+                    onCancel()
+                    dismiss()
+                }
+                .workflowActionButtonStyle()
+
+                Spacer()
+
+                Button("Save") {
+                    onSave(workflowForValidation)
+                    dismiss()
+                }
+                .workflowActionButtonStyle(prominent: true)
+                .disabled(!validationErrors.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 560, height: 680)
+        .background(Color(.windowBackgroundColor))
+    }
+
+    private func chooseExecutable() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = true
+
+        if panel.runModal() == .OK, let url = panel.url {
+            draft.executablePath = url.path
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func workflowActionButtonStyle(prominent: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            if prominent {
+                buttonStyle(.glassProminent)
+            } else {
+                buttonStyle(.glass)
+            }
+        } else {
+            if prominent {
+                buttonStyle(.borderedProminent)
+            } else {
+                buttonStyle(.bordered)
+            }
         }
     }
 }

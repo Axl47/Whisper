@@ -8,6 +8,7 @@ enum RecordingState {
     case recording
     case decoding
     case busy
+    case result
 }
 
 @MainActor
@@ -24,20 +25,22 @@ class IndicatorViewModel: ObservableObject {
     @Published var isVisible = false
     @Published var liveCommittedText = ""
     @Published var livePreviewText = ""
+    @Published var resultMessage: IndicatorOutcomeMessage?
+    @Published var workflowAccentColorHex: String?
     
     var delegate: IndicatorViewDelegate?
     private var blinkTimer: Timer?
     private var hideTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
     
-    private let recordingStore: RecordingStore
     private let transcriptionService: TranscriptionService
     private let transcriptionQueue: TranscriptionQueue
+    private let liveRecordingCoordinator: LiveRecordingCoordinator
     
-    init() {
-        self.recordingStore = RecordingStore.shared
+    init(liveRecordingCoordinator: LiveRecordingCoordinator? = nil) {
         self.transcriptionService = TranscriptionService.shared
         self.transcriptionQueue = TranscriptionQueue.shared
+        self.liveRecordingCoordinator = liveRecordingCoordinator ?? .shared
         
         recorder.$isConnecting
             .receive(on: RunLoop.main)
@@ -88,6 +91,7 @@ class IndicatorViewModel: ObservableObject {
     }
     
     func showBusyMessage() {
+        clearWorkflowPresentation()
         state = .busy
         
         hideTimer?.invalidate()
@@ -99,6 +103,8 @@ class IndicatorViewModel: ObservableObject {
     }
     
     func startRecording() {
+        clearWorkflowPresentation()
+
         if isTranscriptionBusy {
             showBusyMessage()
             return
@@ -153,6 +159,7 @@ class IndicatorViewModel: ObservableObject {
         }
         
         state = .decoding
+        resultMessage = nil
 
         if transcriptionService.isLiveWhisperSessionActive {
             let tempURL = recorder.stopLiveHotkeyCapture()
@@ -164,13 +171,22 @@ class IndicatorViewModel: ObservableObject {
 
                 if let tempURL {
                     do {
-                        let text = try await self.transcriptionService.transcribeAudio(
-                            url: tempURL,
+                        let result = try await self.liveRecordingCoordinator.finalizeRecording(
+                            tempURL: tempURL,
+                            duration: 0,
                             settings: Settings(),
+                            deliveryTarget: .pasteIfNotWorkflow,
                             preserveDisplayedText: true
                         )
-                        try await self.persistCompletedRecording(from: tempURL, transcription: text)
-                        self.insertText(text)
+                        if let pasteText = result.pasteText {
+                            self.insertText(pasteText)
+                        }
+                        if let indicatorMessage = result.indicatorMessage {
+                            await MainActor.run {
+                                self.showResultMessage(indicatorMessage)
+                            }
+                            return
+                        }
                     } catch {
                         print("Error finalizing live Whisper audio: \(error)")
                         try? FileManager.default.removeItem(at: tempURL)
@@ -178,6 +194,7 @@ class IndicatorViewModel: ObservableObject {
                 }
 
                 await MainActor.run {
+                    self.clearWorkflowPresentation()
                     self.delegate?.didFinishDecoding()
                 }
             }
@@ -189,23 +206,33 @@ class IndicatorViewModel: ObservableObject {
                 guard let self = self else { return }
                 
                 do {
-                    print("start decoding...")
-                    let text = try await transcriptionService.transcribeAudio(url: tempURL, settings: Settings())
-                    try await self.persistCompletedRecording(from: tempURL, transcription: text)
-                    
-                    insertText(text)
-                    print("Transcription result: \(text)")
+                    let result = try await self.liveRecordingCoordinator.finalizeRecording(
+                        tempURL: tempURL,
+                        duration: 0,
+                        settings: Settings(),
+                        deliveryTarget: .pasteIfNotWorkflow
+                    )
+                    if let pasteText = result.pasteText {
+                        self.insertText(pasteText)
+                    }
+                    if let indicatorMessage = result.indicatorMessage {
+                        await MainActor.run {
+                            self.showResultMessage(indicatorMessage)
+                        }
+                        return
+                    }
                 } catch {
                     print("Error transcribing audio: \(error)")
                     try? FileManager.default.removeItem(at: tempURL)
                 }
                 
                 await MainActor.run {
+                    self.clearWorkflowPresentation()
                     self.delegate?.didFinishDecoding()
                 }
             }
         } else {
-            
+            clearWorkflowPresentation()
             print("!!! Not found record url !!!")
             
             Task {
@@ -253,12 +280,14 @@ class IndicatorViewModel: ObservableObject {
         hideTimer = nil
         liveCommittedText = ""
         livePreviewText = ""
+        clearWorkflowPresentation()
         cancellables.removeAll()
     }
 
     func cancelRecording() {
         hideTimer?.invalidate()
         hideTimer = nil
+        clearWorkflowPresentation()
         if transcriptionService.isLiveWhisperSessionActive {
             Task {
                 await self.transcriptionService.cancelLiveWhisperHotkeySession()
@@ -267,25 +296,22 @@ class IndicatorViewModel: ObservableObject {
         recorder.cancelRecording()
     }
 
-    private func persistCompletedRecording(from tempURL: URL, transcription: String) async throws {
-        let timestamp = Date()
-        let fileName = "\(Int(timestamp.timeIntervalSince1970)).wav"
-        let recordingId = UUID()
-        let finalRecording = Recording(
-            id: recordingId,
-            timestamp: timestamp,
-            fileName: fileName,
-            transcription: transcription,
-            duration: 0,
-            status: .completed,
-            progress: 1.0,
-            sourceFileURL: nil
-        )
+    private func clearWorkflowPresentation() {
+        resultMessage = nil
+        workflowAccentColorHex = nil
+    }
 
-        try recorder.moveTemporaryRecording(from: tempURL, to: finalRecording.url)
+    private func showResultMessage(_ message: IndicatorOutcomeMessage) {
+        resultMessage = message
+        workflowAccentColorHex = message.accentColorHex
+        state = .result
 
-        await MainActor.run {
-            self.recordingStore.addRecording(finalRecording)
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.clearWorkflowPresentation()
+                self?.delegate?.didFinishDecoding()
+            }
         }
     }
 
@@ -335,6 +361,13 @@ struct IndicatorWindow: View {
         colorScheme == .dark
             ? Color.white.opacity(0.07)
             : Color.white.opacity(0.20)
+    }
+
+    private var workflowAccentColor: Color? {
+        guard let workflowAccentColorHex = viewModel.workflowAccentColorHex else {
+            return nil
+        }
+        return Color(workflowHex: workflowAccentColorHex)
     }
 
     private var badgeGlassTint: Color {
@@ -466,6 +499,13 @@ struct IndicatorWindow: View {
                     RoundedRectangle(cornerRadius: outerCornerRadius)
                         .strokeBorder(highlightStrokeColor, lineWidth: 0.75)
                 }
+                .overlay {
+                    if let workflowAccentColor {
+                        RoundedRectangle(cornerRadius: outerCornerRadius)
+                            .strokeBorder(workflowAccentColor.opacity(0.72), lineWidth: 1.25)
+                            .shadow(color: workflowAccentColor.opacity(0.34), radius: 18)
+                    }
+                }
                 .overlay(alignment: .top) {
                     RoundedRectangle(cornerRadius: outerCornerRadius)
                         .fill(specularHighlight)
@@ -495,6 +535,13 @@ struct IndicatorWindow: View {
                 .overlay {
                     RoundedRectangle(cornerRadius: outerCornerRadius)
                         .strokeBorder(highlightStrokeColor, lineWidth: 0.75)
+                }
+                .overlay {
+                    if let workflowAccentColor {
+                        RoundedRectangle(cornerRadius: outerCornerRadius)
+                            .strokeBorder(workflowAccentColor.opacity(0.72), lineWidth: 1.25)
+                            .shadow(color: workflowAccentColor.opacity(0.30), radius: 14)
+                    }
                 }
                 .overlay(alignment: .top) {
                     RoundedRectangle(cornerRadius: outerCornerRadius)
@@ -638,6 +685,16 @@ struct IndicatorWindow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+        case .result:
+            HStack(spacing: 12) {
+                statusAccessory
+                Text(viewModel.resultMessage?.text ?? "Workflow finished")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(viewModel.resultMessage?.isError == true ? Color.orange : Color.primary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
         case .idle:
             EmptyView()
         }
@@ -658,6 +715,10 @@ struct IndicatorWindow: View {
                     Image(systemName: "hourglass")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.orange)
+                case .result:
+                    Image(systemName: viewModel.resultMessage?.isError == true ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(viewModel.resultMessage?.isError == true ? .orange : .green)
                 case .idle:
                     EmptyView()
                 }
@@ -667,7 +728,7 @@ struct IndicatorWindow: View {
     }
 
     private var statusUsesAccentColor: Bool {
-        viewModel.state == .busy
+        viewModel.state == .busy || viewModel.resultMessage?.isError == true
     }
 
     private var transcriptSection: some View {

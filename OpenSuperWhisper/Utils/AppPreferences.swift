@@ -23,6 +23,9 @@ struct OptionalUserDefault<T> {
 
 final class AppPreferences {
     static let shared = AppPreferences()
+    private let workflowEncoder = JSONEncoder()
+    private let workflowDecoder = JSONDecoder()
+
     private init() {
         migrateOldPreferences()
     }
@@ -110,4 +113,32 @@ final class AppPreferences {
     
     @UserDefault(key: "addSpaceAfterSentence", defaultValue: true)
     var addSpaceAfterSentence: Bool
+
+    @UserDefault(key: "voiceWorkflowsEnabled", defaultValue: false)
+    var voiceWorkflowsEnabled: Bool
+
+    @OptionalUserDefault(key: "voiceWorkflowsData")
+    private var voiceWorkflowsData: Data?
+
+    var voiceWorkflows: [VoiceWorkflow] {
+        get {
+            guard let voiceWorkflowsData else {
+                return []
+            }
+
+            do {
+                return try workflowDecoder.decode([VoiceWorkflow].self, from: voiceWorkflowsData)
+            } catch {
+                print("Failed to decode voice workflows: \(error)")
+                return []
+            }
+        }
+        set {
+            do {
+                voiceWorkflowsData = try workflowEncoder.encode(newValue)
+            } catch {
+                print("Failed to encode voice workflows: \(error)")
+            }
+        }
+    }
 }

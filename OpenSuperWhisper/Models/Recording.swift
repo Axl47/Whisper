@@ -9,6 +9,16 @@ enum RecordingStatus: String, Codable {
     case failed
 }
 
+enum RecordingDeliveryKind: String, Codable {
+    case transcription
+    case workflow
+}
+
+enum WorkflowExecutionStatus: String, Codable {
+    case succeeded
+    case failed
+}
+
 struct Recording: Identifiable, Codable, FetchableRecord, PersistableRecord, Equatable {
     let id: UUID
     let timestamp: Date
@@ -18,11 +28,16 @@ struct Recording: Identifiable, Codable, FetchableRecord, PersistableRecord, Equ
     var status: RecordingStatus
     var progress: Float
     var sourceFileURL: String?
+    var deliveryKind: RecordingDeliveryKind = .transcription
+    var workflowName: String?
+    var workflowExecutionStatus: WorkflowExecutionStatus?
+    var workflowExecutionMessage: String?
     
     var isRegeneration: Bool = false
     
     enum CodingKeys: String, CodingKey {
         case id, timestamp, fileName, transcription, duration, status, progress, sourceFileURL
+        case deliveryKind, workflowName, workflowExecutionStatus, workflowExecutionMessage
     }
 
     static func == (lhs: Recording, rhs: Recording) -> Bool {
@@ -30,6 +45,10 @@ struct Recording: Identifiable, Codable, FetchableRecord, PersistableRecord, Equ
                lhs.status == rhs.status &&
                lhs.progress == rhs.progress &&
                lhs.transcription == rhs.transcription &&
+               lhs.deliveryKind == rhs.deliveryKind &&
+               lhs.workflowName == rhs.workflowName &&
+               lhs.workflowExecutionStatus == rhs.workflowExecutionStatus &&
+               lhs.workflowExecutionMessage == rhs.workflowExecutionMessage &&
                lhs.isRegeneration == rhs.isRegeneration
     }
 
@@ -65,6 +84,10 @@ struct Recording: Identifiable, Codable, FetchableRecord, PersistableRecord, Equ
         static let status = Column(CodingKeys.status)
         static let progress = Column(CodingKeys.progress)
         static let sourceFileURL = Column(CodingKeys.sourceFileURL)
+        static let deliveryKind = Column(CodingKeys.deliveryKind)
+        static let workflowName = Column(CodingKeys.workflowName)
+        static let workflowExecutionStatus = Column(CodingKeys.workflowExecutionStatus)
+        static let workflowExecutionMessage = Column(CodingKeys.workflowExecutionMessage)
     }
 }
 
@@ -94,9 +117,9 @@ class RecordingStore: ObservableObject {
         }
     }
 
-    private nonisolated func setupDatabase() throws {
+    nonisolated static func makeMigrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
-        
+
         migrator.registerMigration("v1") { db in
             try db.create(table: Recording.databaseTableName, ifNotExists: true) { t in
                 t.column("id", .text).primaryKey()
@@ -127,8 +150,38 @@ class RecordingStore: ObservableObject {
                 }
             }
         }
-        
-        try migrator.migrate(dbQueue)
+
+        migrator.registerMigration("v3_workflow_metadata") { db in
+            let columns = try db.columns(in: Recording.databaseTableName)
+            let columnNames = columns.map(\.name)
+
+            if !columnNames.contains("deliveryKind") {
+                try db.alter(table: Recording.databaseTableName) { t in
+                    t.add(column: "deliveryKind", .text).notNull().defaults(to: RecordingDeliveryKind.transcription.rawValue)
+                }
+            }
+            if !columnNames.contains("workflowName") {
+                try db.alter(table: Recording.databaseTableName) { t in
+                    t.add(column: "workflowName", .text)
+                }
+            }
+            if !columnNames.contains("workflowExecutionStatus") {
+                try db.alter(table: Recording.databaseTableName) { t in
+                    t.add(column: "workflowExecutionStatus", .text)
+                }
+            }
+            if !columnNames.contains("workflowExecutionMessage") {
+                try db.alter(table: Recording.databaseTableName) { t in
+                    t.add(column: "workflowExecutionMessage", .text)
+                }
+            }
+        }
+
+        return migrator
+    }
+
+    private nonisolated func setupDatabase() throws {
+        try Self.makeMigrator().migrate(dbQueue)
     }
     
     private nonisolated func fetchAllRecordings() async throws -> [Recording] {

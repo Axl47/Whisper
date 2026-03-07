@@ -33,8 +33,11 @@ class ContentViewModel: ObservableObject {
     private var recordingStartTime: Date?
     private var durationTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
+    private let liveRecordingCoordinator: LiveRecordingCoordinator
     
-    init() {
+    init(liveRecordingCoordinator: LiveRecordingCoordinator? = nil) {
+        self.liveRecordingCoordinator = liveRecordingCoordinator ?? .shared
+
         recorder.$isConnecting
             .receive(on: RunLoop.main)
             .sink { [weak self] isConnecting in
@@ -187,53 +190,21 @@ class ContentViewModel: ObservableObject {
                 guard let self = self else { return }
 
                 do {
-                    print("start decoding...")
-                    let text = try await transcriptionService.transcribeAudio(url: tempURL, settings: Settings())
-
-                    // Capture the current recording duration
                     let duration = await MainActor.run { self.recordingDuration }
-                    
-                    // Create a new Recording instance
-                    let timestamp = Date()
-                    let fileName = "\(Int(timestamp.timeIntervalSince1970)).wav"
-                    let recordingId = UUID()
-                    let finalURL = Recording(
-                        id: recordingId,
-                        timestamp: timestamp,
-                        fileName: fileName,
-                        transcription: text,
+                    let result = try await self.liveRecordingCoordinator.finalizeRecording(
+                        tempURL: tempURL,
                         duration: duration,
-                        status: .completed,
-                        progress: 1.0,
-                        sourceFileURL: nil
-                    ).url
+                        settings: Settings(),
+                        deliveryTarget: .historyOnly
+                    )
 
-                    // Move the temporary recording to final location
-                    try recorder.moveTemporaryRecording(from: tempURL, to: finalURL)
-
-                    // Save the recording to store
                     await MainActor.run {
-                        let newRecording = Recording(
-                            id: recordingId,
-                            timestamp: timestamp,
-                            fileName: fileName,
-                            transcription: text,
-                            duration: self.recordingDuration,
-                            status: .completed,
-                            progress: 1.0,
-                            sourceFileURL: nil
-                        )
-                        self.recordingStore.addRecording(newRecording)
-                        
-                        // Clear search and show the new recording
                         if !self.currentSearchQuery.isEmpty {
                             self.shouldClearSearch = true
                             self.currentSearchQuery = ""
                         }
-                        self.recordings.insert(newRecording, at: 0)
+                        self.recordings.insert(result.recording, at: 0)
                     }
-
-                    print("Transcription result: \(text)")
                 } catch {
                     print("Error transcribing audio: \(error)")
                     try? FileManager.default.removeItem(at: tempURL)
@@ -772,6 +743,18 @@ struct RecordingRow: View {
         return recording.transcription
     }
 
+    private var isWorkflow: Bool {
+        recording.deliveryKind == .workflow
+    }
+
+    private var workflowFailureMessage: String? {
+        guard recording.deliveryKind == .workflow,
+              recording.workflowExecutionStatus == .failed else {
+            return nil
+        }
+        return recording.workflowExecutionMessage
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if isPending && !isRegenerating {
@@ -843,27 +826,58 @@ struct RecordingRow: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, isPending && !isRegenerating ? 4 : 8)
-            } else if !displayText.isEmpty {
-                ZStack(alignment: .topLeading) {
-                    TranscriptionView(
-                        transcribedText: displayText,
-                        searchQuery: searchQuery,
-                        isExpanded: $showTranscription
-                    )
-                    
-                    if isRegenerating {
-                        ShimmerOverlay()
-                            .transition(.opacity.animation(.easeInOut(duration: 0.3)))
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    if isWorkflow {
+                        HStack(spacing: 8) {
+                            Text("Workflow")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.purple)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.purple.opacity(0.12))
+                                .clipShape(Capsule())
+
+                            if let workflowName = recording.workflowName, !workflowName.isEmpty {
+                                Text(workflowName)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+
+                    if let workflowFailureMessage {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                            Text(workflowFailureMessage)
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                    }
+
+                    if !displayText.isEmpty {
+                        ZStack(alignment: .topLeading) {
+                            TranscriptionView(
+                                transcribedText: displayText,
+                                searchQuery: searchQuery,
+                                isExpanded: $showTranscription
+                            )
+                            
+                            if isRegenerating {
+                                ShimmerOverlay()
+                                    .transition(.opacity.animation(.easeInOut(duration: 0.3)))
+                            }
+                        }
+                    } else if !isPending && !isWorkflow {
+                        Text("No speech detected")
+                            .font(.body)
+                            .foregroundColor(.secondary)
                     }
                 }
-                .padding(.horizontal, 4)
+                .padding(.horizontal, isWorkflow ? 12 : 4)
                 .padding(.top, isPending && !isRegenerating ? 4 : 8)
-            } else if !isPending {
-                Text("No speech detected")
-                    .font(.body)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
             }
 
             Divider()
