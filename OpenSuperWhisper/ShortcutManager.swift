@@ -11,20 +11,95 @@ extension KeyboardShortcuts.Name {
     static let escape = Self("escape", default: .init(.escape))
 }
 
+enum ShortcutRecordingAction: Equatable {
+    case none
+    case start
+    case stop
+}
+
+struct ShortcutRecordingInteractionState {
+    private(set) var isSessionActive = false
+    private(set) var hotkeyIsPressed = false
+    private(set) var holdMode = false
+    private(set) var handsFreeMode = false
+
+    mutating func handleHotkeyDown(holdToRecordEnabled: Bool) -> ShortcutRecordingAction {
+        hotkeyIsPressed = true
+
+        if !isSessionActive {
+            isSessionActive = true
+            holdMode = false
+            handsFreeMode = false
+            return .start
+        }
+
+        if !holdToRecordEnabled || handsFreeMode || !holdMode {
+            reset()
+            return .stop
+        }
+
+        return .none
+    }
+
+    mutating func enableHoldModeIfNeeded() {
+        guard isSessionActive, hotkeyIsPressed, !handsFreeMode else {
+            return
+        }
+        holdMode = true
+    }
+
+    mutating func handleCommandDown(holdToRecordEnabled: Bool, supportsHandsFreeActivation: Bool) -> Bool {
+        guard holdToRecordEnabled,
+              supportsHandsFreeActivation,
+              isSessionActive,
+              hotkeyIsPressed,
+              !handsFreeMode else {
+            return false
+        }
+
+        handsFreeMode = true
+        holdMode = true
+        return true
+    }
+
+    mutating func handleHotkeyUp(holdToRecordEnabled: Bool) -> ShortcutRecordingAction {
+        hotkeyIsPressed = false
+
+        guard holdToRecordEnabled, isSessionActive, !handsFreeMode else {
+            return .none
+        }
+
+        reset()
+        return .stop
+    }
+
+    mutating func reset() {
+        isSessionActive = false
+        hotkeyIsPressed = false
+        holdMode = false
+        handsFreeMode = false
+    }
+}
+
 class ShortcutManager {
     static let shared = ShortcutManager()
 
     private var activeVm: IndicatorViewModel?
     private var holdWorkItem: DispatchWorkItem?
     private let holdThreshold: TimeInterval = 0.3
-    private var holdMode = false
     private var useModifierOnlyHotkey = false
+    private var modifierOnlyHotkey: ModifierKey = .none
+    private var interactionState = ShortcutRecordingInteractionState()
+    private var globalModifierMonitor: Any?
+    private var localModifierMonitor: Any?
+    private var isCommandPressed = false
 
     private init() {
         print("ShortcutManager init")
         
         setupKeyboardShortcuts()
         setupModifierKeyMonitor()
+        setupCommandModifierMonitor()
         
         NotificationCenter.default.addObserver(
             self,
@@ -43,7 +118,9 @@ class ShortcutManager {
     
     @objc private func indicatorWindowDidHide() {
         activeVm = nil
-        holdMode = false
+        holdWorkItem?.cancel()
+        holdWorkItem = nil
+        interactionState.reset()
     }
     
     @objc private func hotkeySettingsChanged() {
@@ -73,6 +150,7 @@ class ShortcutManager {
     private func setupModifierKeyMonitor() {
         let modifierKeyString = AppPreferences.shared.modifierOnlyHotkey
         let modifierKey = ModifierKey(rawValue: modifierKeyString) ?? .none
+        modifierOnlyHotkey = modifierKey
         
         if modifierKey != .none {
             useModifierOnlyHotkey = true
@@ -95,15 +173,56 @@ class ShortcutManager {
             print("ShortcutManager: Using regular keyboard shortcut")
         }
     }
+
+    private func setupCommandModifierMonitor() {
+        globalModifierMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.handleModifierFlagsChanged(event.modifierFlags)
+        }
+
+        localModifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.handleModifierFlagsChanged(event.modifierFlags)
+            return event
+        }
+    }
+
+    private func handleModifierFlagsChanged(_ flags: NSEvent.ModifierFlags) {
+        let commandPressedNow = flags.intersection(.deviceIndependentFlagsMask).contains(.command)
+        guard commandPressedNow != isCommandPressed else {
+            return
+        }
+
+        isCommandPressed = commandPressedNow
+        guard commandPressedNow else {
+            return
+        }
+
+        let holdToRecordEnabled = AppPreferences.shared.holdToRecord
+        let supportsHandsFreeActivation = !(useModifierOnlyHotkey && modifierOnlyHotkey.cgEventFlag == .maskCommand)
+
+        guard interactionState.handleCommandDown(
+            holdToRecordEnabled: holdToRecordEnabled,
+            supportsHandsFreeActivation: supportsHandsFreeActivation
+        ) else {
+            return
+        }
+
+        holdWorkItem?.cancel()
+        holdWorkItem = nil
+
+        Task { @MainActor in
+            self.activeVm?.setHandsFreeMode(true)
+        }
+    }
     
     private func handleKeyDown() {
         holdWorkItem?.cancel()
-        holdMode = false
         
         let holdToRecordEnabled = AppPreferences.shared.holdToRecord
+        let action = interactionState.handleHotkeyDown(holdToRecordEnabled: holdToRecordEnabled)
         
         Task { @MainActor in
-            if self.activeVm == nil {
+            switch action {
+            case .start:
                 let cursorPosition = FocusUtils.getCurrentCursorPosition()
                 let indicatorPoint: NSPoint?
                 if let caret = FocusUtils.getCaretRect() {
@@ -113,16 +232,19 @@ class ShortcutManager {
                 }
                 let vm = IndicatorWindowManager.shared.show(nearPoint: indicatorPoint)
                 vm.startRecording()
+                vm.setHandsFreeMode(false)
                 self.activeVm = vm
-            } else if !self.holdMode {
+            case .stop:
                 IndicatorWindowManager.shared.stopRecording()
                 self.activeVm = nil
+            case .none:
+                break
             }
         }
         
-        if holdToRecordEnabled {
+        if action == .start && holdToRecordEnabled {
             let workItem = DispatchWorkItem { [weak self] in
-                self?.holdMode = true
+                self?.interactionState.enableHoldModeIfNeeded()
             }
             holdWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + holdThreshold, execute: workItem)
@@ -134,12 +256,12 @@ class ShortcutManager {
         holdWorkItem = nil
         
         let holdToRecordEnabled = AppPreferences.shared.holdToRecord
+        let action = interactionState.handleHotkeyUp(holdToRecordEnabled: holdToRecordEnabled)
         
         Task { @MainActor in
-            if holdToRecordEnabled && self.activeVm != nil {
+            if action == .stop {
                 IndicatorWindowManager.shared.stopRecording()
                 self.activeVm = nil
-                self.holdMode = false
             }
         }
     }

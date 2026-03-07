@@ -23,6 +23,7 @@ class IndicatorViewModel: ObservableObject {
     @Published var isBlinking = false
     @Published var recorder: AudioRecorder = .shared
     @Published var isVisible = false
+    @Published var isHandsFreeMode = false
     @Published var liveCommittedText = ""
     @Published var livePreviewText = ""
     @Published var resultMessage: IndicatorOutcomeMessage?
@@ -108,6 +109,7 @@ class IndicatorViewModel: ObservableObject {
     func startRecording() {
         clearWorkflowPresentation()
         shouldPreserveWorkflowAccentDuringDecoding = false
+        isHandsFreeMode = false
 
         if isTranscriptionBusy {
             showBusyMessage()
@@ -155,6 +157,7 @@ class IndicatorViewModel: ObservableObject {
     
     func startDecoding() {
         stopBlinking()
+        isHandsFreeMode = false
         
         if isTranscriptionBusy && !transcriptionService.isLiveWhisperSessionActive {
             recorder.cancelRecording()
@@ -283,6 +286,7 @@ class IndicatorViewModel: ObservableObject {
         stopBlinking()
         hideTimer?.invalidate()
         hideTimer = nil
+        isHandsFreeMode = false
         liveCommittedText = ""
         livePreviewText = ""
         clearWorkflowPresentation()
@@ -292,6 +296,7 @@ class IndicatorViewModel: ObservableObject {
     func cancelRecording() {
         hideTimer?.invalidate()
         hideTimer = nil
+        isHandsFreeMode = false
         clearWorkflowPresentation()
         if transcriptionService.isLiveWhisperSessionActive {
             Task {
@@ -338,6 +343,7 @@ class IndicatorViewModel: ObservableObject {
         resultMessage = message
         workflowAccentColorHex = message.accentColorHex
         state = .result
+        isHandsFreeMode = false
 
         hideTimer?.invalidate()
         hideTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
@@ -357,6 +363,10 @@ class IndicatorViewModel: ObservableObject {
                 continuation.resume()
             }
         }
+    }
+
+    func setHandsFreeMode(_ isEnabled: Bool) {
+        isHandsFreeMode = isEnabled
     }
 }
 
@@ -714,7 +724,7 @@ struct IndicatorWindow: View {
         case .recording:
             HStack(spacing: 12) {
                 statusAccessory
-                Text("Recording...")
+                Text(viewModel.isHandsFreeMode ? "Hands-Free Recording..." : "Recording...")
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .foregroundStyle(labelColor)
             }

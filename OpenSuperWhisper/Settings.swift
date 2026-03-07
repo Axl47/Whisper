@@ -1285,7 +1285,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Hold to Record")
                                     .font(.subheadline)
-                                Text("Hold the shortcut to record, release to stop")
+                                Text("Hold the shortcut to record, release to stop. Press Command while holding to lock hands-free until the shortcut is pressed again.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
