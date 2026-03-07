@@ -68,8 +68,10 @@ class IndicatorViewModel: ObservableObject {
             .combineLatest(transcriptionService.$currentSegment)
             .receive(on: RunLoop.main)
             .sink { [weak self] committedText, previewText in
-                self?.liveCommittedText = committedText
-                self?.livePreviewText = previewText
+                guard let self = self else { return }
+                self.liveCommittedText = committedText
+                self.livePreviewText = previewText
+                self.updateWorkflowAccentForLivePreview()
             }
             .store(in: &cancellables)
     }
@@ -301,6 +303,30 @@ class IndicatorViewModel: ObservableObject {
         workflowAccentColorHex = nil
     }
 
+    private func updateWorkflowAccentForLivePreview() {
+        guard resultMessage == nil else {
+            return
+        }
+
+        guard transcriptionService.isLiveWhisperSessionActive else {
+            workflowAccentColorHex = nil
+            return
+        }
+
+        let previewTranscript = liveTranscriptPreview
+        guard !previewTranscript.isEmpty else {
+            workflowAccentColorHex = nil
+            return
+        }
+
+        let workflowMatch = VoiceWorkflowMatcher.match(
+            transcript: previewTranscript,
+            workflows: AppPreferences.shared.voiceWorkflows,
+            isEnabled: AppPreferences.shared.voiceWorkflowsEnabled
+        )
+        workflowAccentColorHex = workflowMatch?.workflow.accentColorHex
+    }
+
     private func showResultMessage(_ message: IndicatorOutcomeMessage) {
         resultMessage = message
         workflowAccentColorHex = message.accentColorHex
@@ -502,8 +528,8 @@ struct IndicatorWindow: View {
                 .overlay {
                     if let workflowAccentColor {
                         RoundedRectangle(cornerRadius: outerCornerRadius)
-                            .strokeBorder(workflowAccentColor.opacity(0.72), lineWidth: 1.25)
-                            .shadow(color: workflowAccentColor.opacity(0.34), radius: 18)
+                            .strokeBorder(workflowAccentColor.opacity(0.95), lineWidth: 2.4)
+                            .shadow(color: workflowAccentColor.opacity(0.50), radius: 22)
                     }
                 }
                 .overlay(alignment: .top) {
@@ -539,8 +565,8 @@ struct IndicatorWindow: View {
                 .overlay {
                     if let workflowAccentColor {
                         RoundedRectangle(cornerRadius: outerCornerRadius)
-                            .strokeBorder(workflowAccentColor.opacity(0.72), lineWidth: 1.25)
-                            .shadow(color: workflowAccentColor.opacity(0.30), radius: 14)
+                            .strokeBorder(workflowAccentColor.opacity(0.92), lineWidth: 2.2)
+                            .shadow(color: workflowAccentColor.opacity(0.44), radius: 18)
                     }
                 }
                 .overlay(alignment: .top) {

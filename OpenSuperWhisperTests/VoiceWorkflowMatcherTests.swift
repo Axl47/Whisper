@@ -47,6 +47,16 @@ final class VoiceWorkflowMatcherTests: XCTestCase {
         XCTAssertEqual(match?.payload, "buy milk")
     }
 
+    func testMatch_periodAfterAlias_trimsLeadingPunctuationFromPayload() {
+        let match = VoiceWorkflowMatcher.match(
+            transcript: "obsidian. so i'm testing",
+            workflows: [obsidian],
+            isEnabled: true
+        )
+
+        XCTAssertEqual(match?.payload, "so i'm testing")
+    }
+
     func testMatch_timestampPrefixedTranscript_stripsPrefix() {
         let match = VoiceWorkflowMatcher.match(
             transcript: "[0.0->1.2] obsidian buy milk",

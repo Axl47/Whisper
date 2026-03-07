@@ -10,7 +10,7 @@ struct VoiceWorkflowMatcher {
         pattern: #"(?m)^\s*\[\d+(?:\.\d+)?->\d+(?:\.\d+)?\]\s*"#
     )
     private static let whitespaceRegex = try? NSRegularExpression(pattern: #"\s+"#)
-    private static let payloadSeparatorCharacterSet = CharacterSet(charactersIn: " \t,;:-–—")
+    private static let payloadSeparatorCharacterSet = CharacterSet(charactersIn: " \t,.;:!?-–—")
 
     static func match(
         transcript: String,
