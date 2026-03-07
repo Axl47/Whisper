@@ -592,8 +592,8 @@ struct IndicatorWindow: View {
                 applyTranscriptSurface(to: transcriptSection)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .frame(minHeight: 44)
     }
 

@@ -5,7 +5,7 @@
 - [ ] Run manual in-app verification for the Liquid Glass overlay on the live indicator
 
 ## In Progress
-- [ ] No active implementation task
+- [~] Reduce the indicator shell padding so the outer border feels tighter
 
 ## Done
 - [x] Review the existing hotkey, recorder, transcription, and insertion flows
