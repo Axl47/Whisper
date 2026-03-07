@@ -29,6 +29,20 @@ cp /opt/homebrew/opt/libomp/lib/libomp.dylib ./build/libomp.dylib
 install_name_tool -id "@rpath/libomp.dylib" ./build/libomp.dylib
 codesign --force --sign - ./build/libomp.dylib
 
+echo "Resolving Swift packages..."
+xcodebuild -resolvePackageDependencies -project OpenSuperWhisper.xcodeproj -scheme OpenSuperWhisper -clonedSourcePackagesDirPath SourcePackages -skipPackagePluginValidation -skipMacroValidation >/dev/null
+if [[ $? -ne 0 ]]; then
+    echo "Swift package resolution failed!"
+    exit 1
+fi
+
+echo "Applying local package patches..."
+./Scripts/apply_local_package_patches.sh
+if [[ $? -ne 0 ]]; then
+    echo "Applying local package patches failed!"
+    exit 1
+fi
+
 # Build the app
 echo "Building OpenSuperWhisper..."
 BUILD_OUTPUT=$(xcodebuild -scheme OpenSuperWhisper -configuration Debug -jobs 8 -derivedDataPath build -quiet -destination 'platform=macOS,arch=arm64' -skipPackagePluginValidation -skipMacroValidation -UseModernBuildSystem=YES -clonedSourcePackagesDirPath SourcePackages -skipUnavailableActions CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO OTHER_CODE_SIGN_FLAGS="--entitlements OpenSuperWhisper/OpenSuperWhisper.entitlements" build 2>&1)

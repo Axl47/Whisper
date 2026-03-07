@@ -49,11 +49,9 @@ Contributions are welcome! Please feel free to submit pull requests or create is
 
 ### Contribution TODO list
 
-- [ ] Streaming transcription
-- [ ] Custom dictionary / keyword boosting ([#19](https://github.com/Starmel/OpenSuperWhisper/issues/19))
+- [x] Streaming transcription (preview only)
+- [x] Custom workflows (e.g. append to obsidian, copy to clipboard, etc.)
 - [ ] Agent mode ([#14](https://github.com/Starmel/OpenSuperWhisper/issues/14))
-- [x] Background app ([#8](https://github.com/Starmel/OpenSuperWhisper/issues/8))
-- [x] Support long-press single key audio recording ([#18](https://github.com/Starmel/OpenSuperWhisper/issues/18))
 
 ## License
 
