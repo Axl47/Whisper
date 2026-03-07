@@ -326,108 +326,250 @@ struct RecordingIndicator: View {
 struct IndicatorWindow: View {
     @ObservedObject var viewModel: IndicatorViewModel
     @Environment(\.colorScheme) private var colorScheme
-    
-    private var backgroundColor: Color {
+
+    private let outerCornerRadius: CGFloat = 28
+    private let badgeCornerRadius: CGFloat = 14
+    private let transcriptCornerRadius: CGFloat = 22
+
+    private var outerGlassTint: Color {
         colorScheme == .dark
-            ? Color.black.opacity(0.24)
+            ? Color.white.opacity(0.07)
+            : Color.white.opacity(0.20)
+    }
+
+    private var badgeGlassTint: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.11)
             : Color.white.opacity(0.24)
     }
 
-    var body: some View {
+    private var transcriptGlassTint: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.05)
+            : Color.white.opacity(0.16)
+    }
 
-        let rect = RoundedRectangle(cornerRadius: 24)
-        
-        VStack(alignment: .leading, spacing: 14) {
-            switch viewModel.state {
-            case .connecting:
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                        .frame(width: 24)
-                    
-                    Text("Connecting...")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-            case .recording:
-                HStack(spacing: 8) {
-                    RecordingIndicator(isBlinking: viewModel.isBlinking)
-                        .frame(width: 24)
-                    
-                    Text("Recording...")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-            case .decoding:
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                        .frame(width: 24)
-                    
-                    Text("Transcribing...")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-            case .busy:
-                HStack(spacing: 8) {
-                    Image(systemName: "hourglass")
-                        .foregroundColor(.orange)
-                        .frame(width: 24)
-                    
-                    Text("Processing...")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.orange)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-            case .idle:
-                EmptyView()
-            }
+    private var fallbackFillColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.07)
+            : Color.white.opacity(0.30)
+    }
 
-            if !viewModel.liveTranscriptPreview.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Rectangle()
-                        .fill(.primary.opacity(0.12))
-                        .frame(height: 1)
+    private var fallbackBadgeFillColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.11)
+            : Color.white.opacity(0.24)
+    }
 
-                    Text(viewModel.liveTranscriptPreview)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundColor(.primary.opacity(0.9))
-                        .lineSpacing(3)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
+    private var fallbackInnerFillColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.06)
+            : Color.white.opacity(0.18)
+    }
+
+    private var highlightStrokeColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.24)
+            : Color.white.opacity(0.38)
+    }
+
+    private var softStrokeColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.14)
+            : Color.white.opacity(0.24)
+    }
+
+    private var transcriptStrokeColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.12)
+            : Color.white.opacity(0.20)
+    }
+
+    private var separatorColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.10)
+            : Color.white.opacity(0.16)
+    }
+
+    private var shadowColor: Color {
+        colorScheme == .dark
+            ? Color.black.opacity(0.26)
+            : Color.black.opacity(0.14)
+    }
+
+    private var highlightGlowColor: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.06)
+            : Color.white.opacity(0.12)
+    }
+
+    private var specularHighlight: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color.white.opacity(colorScheme == .dark ? 0.24 : 0.32),
+                Color.white.opacity(colorScheme == .dark ? 0.10 : 0.16),
+                Color.clear
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var ambientWash: LinearGradient {
+        LinearGradient(
+            colors: [
+                highlightGlowColor,
+                Color.clear,
+                Color.white.opacity(colorScheme == .dark ? 0.02 : 0.05)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    @ViewBuilder
+    private func applyBadgeSurface<Content: View>(to content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(badgeGlassTint), in: .rect(cornerRadius: badgeCornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: badgeCornerRadius)
+                        .strokeBorder(softStrokeColor, lineWidth: 0.6)
                 }
-                .padding(.top, 2)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
+        } else {
+            content
                 .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(backgroundColor)
+                    RoundedRectangle(cornerRadius: badgeCornerRadius)
+                        .fill(fallbackBadgeFillColor)
                         .background {
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Material.thinMaterial)
+                            RoundedRectangle(cornerRadius: badgeCornerRadius)
+                                .fill(.regularMaterial)
                         }
                 )
+                .overlay {
+                    RoundedRectangle(cornerRadius: badgeCornerRadius)
+                        .strokeBorder(softStrokeColor, lineWidth: 0.6)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func applyOuterSurface<Content: View>(to content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(outerGlassTint), in: .rect(cornerRadius: outerCornerRadius))
+                .background {
+                    RoundedRectangle(cornerRadius: outerCornerRadius)
+                        .fill(ambientWash)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: outerCornerRadius)
+                        .strokeBorder(highlightStrokeColor, lineWidth: 0.75)
+                }
+                .overlay(alignment: .top) {
+                    RoundedRectangle(cornerRadius: outerCornerRadius)
+                        .fill(specularHighlight)
+                        .frame(height: 36)
+                        .padding(1)
+                        .blur(radius: 1.25)
+                        .mask(
+                            RoundedRectangle(cornerRadius: outerCornerRadius)
+                                .padding(1)
+                        )
+                }
+                .shadow(color: shadowColor, radius: 20, x: 0, y: 10)
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: outerCornerRadius)
+                        .fill(fallbackFillColor)
+                        .background {
+                            RoundedRectangle(cornerRadius: outerCornerRadius)
+                                .fill(.ultraThinMaterial)
+                        }
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: outerCornerRadius)
+                        .fill(ambientWash)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: outerCornerRadius)
+                        .strokeBorder(highlightStrokeColor, lineWidth: 0.75)
+                }
+                .overlay(alignment: .top) {
+                    RoundedRectangle(cornerRadius: outerCornerRadius)
+                        .fill(specularHighlight)
+                        .frame(height: 34)
+                        .padding(1)
+                        .blur(radius: 1.5)
+                        .mask(
+                            RoundedRectangle(cornerRadius: outerCornerRadius)
+                                .padding(1)
+                        )
+                }
+                .shadow(color: shadowColor, radius: 16, x: 0, y: 8)
+        }
+    }
+
+    @ViewBuilder
+    private func applyTranscriptSurface<Content: View>(to content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(transcriptGlassTint), in: .rect(cornerRadius: transcriptCornerRadius))
+                .background {
+                    RoundedRectangle(cornerRadius: transcriptCornerRadius)
+                        .fill(ambientWash)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: transcriptCornerRadius)
+                        .strokeBorder(transcriptStrokeColor, lineWidth: 0.6)
+                }
+                .overlay(alignment: .top) {
+                    Capsule()
+                        .fill(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.12))
+                        .frame(height: 0.8)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 1)
+                }
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: transcriptCornerRadius)
+                        .fill(fallbackInnerFillColor)
+                        .background {
+                            RoundedRectangle(cornerRadius: transcriptCornerRadius)
+                                .fill(.regularMaterial)
+                        }
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: transcriptCornerRadius)
+                        .fill(ambientWash)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: transcriptCornerRadius)
+                        .strokeBorder(transcriptStrokeColor, lineWidth: 0.6)
+                }
+                .overlay(alignment: .top) {
+                    Capsule()
+                        .fill(Color.white.opacity(colorScheme == .dark ? 0.07 : 0.10))
+                        .frame(height: 0.8)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 1)
+                }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: 12) {
+                    applyOuterSurface(to: overlayContent)
+                }
+            } else {
+                applyOuterSurface(to: overlayContent)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 14)
-        .frame(minHeight: 44)
-        .background {
-            rect
-                .fill(backgroundColor)
-                .background {
-                    rect
-                        .fill(Material.thinMaterial)
-                }
-                .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 4)
-        }
-        .clipShape(rect)
-        .frame(width: viewModel.liveTranscriptPreview.isEmpty ? 220 : 360)
+        .frame(width: viewModel.liveTranscriptPreview.isEmpty ? 250 : 420)
         .scaleEffect(viewModel.isVisible ? 1 : 0.5)
         .offset(y: viewModel.isVisible ? 0 : 20)
         .opacity(viewModel.isVisible ? 1 : 0)
@@ -435,6 +577,111 @@ struct IndicatorWindow: View {
         .onAppear {
             viewModel.isVisible = true
         }
+    }
+
+    private var overlayContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            statusRow
+
+            if !viewModel.liveTranscriptPreview.isEmpty {
+                Rectangle()
+                    .fill(separatorColor)
+                    .frame(height: 0.75)
+                    .frame(maxWidth: .infinity)
+
+                applyTranscriptSurface(to: transcriptSection)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .frame(minHeight: 44)
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        let labelColor = statusUsesAccentColor ? Color.orange : Color.primary
+
+        switch viewModel.state {
+        case .connecting:
+            HStack(spacing: 12) {
+                statusAccessory
+                Text("Connecting...")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(labelColor)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .recording:
+            HStack(spacing: 12) {
+                statusAccessory
+                Text("Recording...")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(labelColor)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .decoding:
+            HStack(spacing: 12) {
+                statusAccessory
+                Text("Transcribing...")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(labelColor)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .busy:
+            HStack(spacing: 12) {
+                statusAccessory
+                Text("Processing...")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(labelColor)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var statusAccessory: some View {
+        applyBadgeSurface(
+            to: Group {
+                switch viewModel.state {
+                case .connecting, .decoding:
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.primary.opacity(0.8))
+                case .recording:
+                    RecordingIndicator(isBlinking: viewModel.isBlinking)
+                case .busy:
+                    Image(systemName: "hourglass")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.orange)
+                case .idle:
+                    EmptyView()
+                }
+            }
+            .frame(width: 28, height: 28)
+        )
+    }
+
+    private var statusUsesAccentColor: Bool {
+        viewModel.state == .busy
+    }
+
+    private var transcriptSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(viewModel.liveTranscriptPreview)
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(.primary.opacity(0.92))
+                .lineSpacing(4)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
     }
 }
 
