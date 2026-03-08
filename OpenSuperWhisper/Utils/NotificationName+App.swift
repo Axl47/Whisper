@@ -5,4 +5,5 @@ extension Notification.Name {
     static let hotkeySettingsChanged = Notification.Name("HotkeySettingsChanged")
     static let indicatorWindowDidHide = Notification.Name("IndicatorWindowDidHide")
     static let openSettings = Notification.Name("OpenSettings")
+    static let appStateOnboardingDidComplete = Notification.Name("AppStateOnboardingDidComplete")
 }

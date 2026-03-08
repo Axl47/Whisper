@@ -479,7 +479,7 @@ struct OnboardingView: View {
     }
 
     private func handleContinueButtonTap() {
-        appState.hasCompletedOnboarding = true
+        appState.completeOnboarding()
     }
 }
 
@@ -780,4 +780,3 @@ struct OnboardingShortcutCard: View {
 #Preview {
     OnboardingView()
 }
-
