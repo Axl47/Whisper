@@ -64,6 +64,7 @@ final class LiveRecordingCoordinator {
         let recording: Recording
         let pasteText: String?
         let indicatorMessage: IndicatorOutcomeMessage?
+        let pendingWorkflowTask: Task<WorkflowExecutionResult, Never>?
 
         if let match {
             if match.payload.isEmpty {
@@ -87,35 +88,62 @@ final class LiveRecordingCoordinator {
                     isError: true,
                     accentColorHex: match.workflow.accentColorHex
                 )
+                pendingWorkflowTask = nil
             } else {
-                let execution = await VoiceWorkflowExecutor.execute(
+                let executionHandle = await VoiceWorkflowExecutor.start(
                     workflow: match.workflow,
                     payload: match.payload
                 )
-                let workflowMessage = VoiceWorkflowExecutor.truncatedMessage(execution.message)
 
-                recording = Recording(
-                    id: recordingId,
-                    timestamp: timestamp,
-                    fileName: fileName,
-                    transcription: match.payload,
-                    duration: duration,
-                    status: .completed,
-                    progress: 1.0,
-                    sourceFileURL: nil,
-                    deliveryKind: .workflow,
-                    workflowName: match.workflow.name,
-                    workflowExecutionStatus: execution.status,
-                    workflowExecutionMessage: workflowMessage
-                )
                 pasteText = nil
-                indicatorMessage = IndicatorOutcomeMessage(
-                    text: execution.status == .succeeded
-                        ? "Ran \(match.workflow.name)"
-                        : "\(match.workflow.name) failed: \(workflowMessage ?? "Command failed.")",
-                    isError: execution.status == .failed,
-                    accentColorHex: match.workflow.accentColorHex
-                )
+
+                if let execution = executionHandle.immediateResult {
+                    let workflowMessage = VoiceWorkflowExecutor.truncatedMessage(execution.message)
+
+                    recording = Recording(
+                        id: recordingId,
+                        timestamp: timestamp,
+                        fileName: fileName,
+                        transcription: match.payload,
+                        duration: duration,
+                        status: .completed,
+                        progress: 1.0,
+                        sourceFileURL: nil,
+                        deliveryKind: .workflow,
+                        workflowName: match.workflow.name,
+                        workflowExecutionStatus: execution.status,
+                        workflowExecutionMessage: workflowMessage
+                    )
+                    indicatorMessage = IndicatorOutcomeMessage(
+                        text: execution.status == .succeeded
+                            ? "Ran \(match.workflow.name)"
+                            : "\(match.workflow.name) failed: \(workflowMessage ?? "Command failed.")",
+                        isError: execution.status == .failed,
+                        accentColorHex: match.workflow.accentColorHex
+                    )
+                    pendingWorkflowTask = nil
+                } else {
+                    recording = Recording(
+                        id: recordingId,
+                        timestamp: timestamp,
+                        fileName: fileName,
+                        transcription: match.payload,
+                        duration: duration,
+                        status: .completed,
+                        progress: 1.0,
+                        sourceFileURL: nil,
+                        deliveryKind: .workflow,
+                        workflowName: match.workflow.name,
+                        workflowExecutionStatus: .running,
+                        workflowExecutionMessage: nil
+                    )
+                    indicatorMessage = IndicatorOutcomeMessage(
+                        text: "Running \(match.workflow.name)",
+                        isError: false,
+                        accentColorHex: match.workflow.accentColorHex
+                    )
+                    pendingWorkflowTask = executionHandle.pendingResultTask
+                }
             }
         } else {
             recording = Recording(
@@ -134,15 +162,37 @@ final class LiveRecordingCoordinator {
             )
             pasteText = deliveryTarget == .pasteIfNotWorkflow ? transcript : nil
             indicatorMessage = nil
+            pendingWorkflowTask = nil
         }
 
         try recorder.moveTemporaryRecording(from: tempURL, to: recording.url)
         try await recordingStore.addRecordingSync(recording)
+
+        if let pendingWorkflowTask {
+            observeWorkflowExecution(
+                task: pendingWorkflowTask,
+                recordingId: recordingId
+            )
+        }
 
         return LiveRecordingCompletionResult(
             recording: recording,
             pasteText: pasteText,
             indicatorMessage: indicatorMessage
         )
+    }
+
+    private func observeWorkflowExecution(
+        task: Task<WorkflowExecutionResult, Never>,
+        recordingId: UUID
+    ) {
+        Task { [recordingStore] in
+            let execution = await task.value
+            await recordingStore.updateWorkflowExecutionSync(
+                recordingId,
+                status: execution.status,
+                message: VoiceWorkflowExecutor.truncatedMessage(execution.message)
+            )
+        }
     }
 }

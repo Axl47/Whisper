@@ -66,4 +66,48 @@ final class VoiceWorkflowExecutorTests: XCTestCase {
         XCTAssertEqual(result.stdout, #"buy "milk" tomorrow"#)
         XCTAssertNil(result.message)
     }
+
+    func testStart_returnsImmediateResultForFastWorkflow() async {
+        let workflow = VoiceWorkflow(
+            name: "Fast Shell",
+            aliases: ["fast"],
+            launchMode: .shell,
+            executablePath: "",
+            arguments: [],
+            shellCommand: #"printf '%s' "$OPENSUPERWHISPER_WORKFLOW_TEXT""#
+        )
+
+        let handle = await VoiceWorkflowExecutor.start(
+            workflow: workflow,
+            payload: "buy milk tomorrow",
+            inlineTimeoutNanoseconds: 500_000_000
+        )
+
+        XCTAssertEqual(handle.immediateResult?.status, .succeeded)
+        XCTAssertEqual(handle.immediateResult?.stdout, "buy milk tomorrow")
+        XCTAssertNil(handle.pendingResultTask)
+    }
+
+    func testStart_returnsPendingTaskForLongRunningWorkflow() async throws {
+        let workflow = VoiceWorkflow(
+            name: "Slow Shell",
+            aliases: ["slow"],
+            launchMode: .shell,
+            executablePath: "",
+            arguments: [],
+            shellCommand: #"sleep 1; printf '%s' "$OPENSUPERWHISPER_WORKFLOW_TEXT""#
+        )
+
+        let handle = await VoiceWorkflowExecutor.start(
+            workflow: workflow,
+            payload: "buy milk tomorrow",
+            inlineTimeoutNanoseconds: 50_000_000
+        )
+
+        XCTAssertNil(handle.immediateResult)
+        let pendingTask = try XCTUnwrap(handle.pendingResultTask)
+        let result = await pendingTask.value
+        XCTAssertEqual(result.status, .succeeded)
+        XCTAssertEqual(result.stdout, "buy milk tomorrow")
+    }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-struct WorkflowExecutionResult: Equatable {
+struct WorkflowExecutionResult: Equatable, Sendable {
     let exitCode: Int32
     let stdout: String
     let stderr: String
@@ -8,13 +8,44 @@ struct WorkflowExecutionResult: Equatable {
     let message: String?
 }
 
+struct WorkflowExecutionHandle {
+    let immediateResult: WorkflowExecutionResult?
+    let pendingResultTask: Task<WorkflowExecutionResult, Never>?
+}
+
 enum VoiceWorkflowExecutor {
     static let payloadEnvironmentKey = "OPENSUPERWHISPER_WORKFLOW_TEXT"
+    static let defaultInlineCompletionTimeoutNanoseconds: UInt64 = 400_000_000
 
     static func execute(workflow: VoiceWorkflow, payload: String) async -> WorkflowExecutionResult {
         await Task.detached(priority: .userInitiated) {
             run(workflow: workflow, payload: payload)
         }.value
+    }
+
+    static func start(
+        workflow: VoiceWorkflow,
+        payload: String,
+        inlineTimeoutNanoseconds: UInt64 = defaultInlineCompletionTimeoutNanoseconds
+    ) async -> WorkflowExecutionHandle {
+        let executionTask = Task.detached(priority: .userInitiated) {
+            run(workflow: workflow, payload: payload)
+        }
+
+        if let immediateResult = await waitForResult(
+            from: executionTask,
+            timeoutNanoseconds: inlineTimeoutNanoseconds
+        ) {
+            return WorkflowExecutionHandle(
+                immediateResult: immediateResult,
+                pendingResultTask: nil
+            )
+        }
+
+        return WorkflowExecutionHandle(
+            immediateResult: nil,
+            pendingResultTask: executionTask
+        )
     }
 
     static func substitutedArguments(arguments: [String], payload: String) -> [String] {
@@ -144,5 +175,24 @@ enum VoiceWorkflowExecutor {
 
         let endIndex = trimmed.index(trimmed.startIndex, offsetBy: 237)
         return String(trimmed[..<endIndex]) + "..."
+    }
+
+    private static func waitForResult(
+        from task: Task<WorkflowExecutionResult, Never>,
+        timeoutNanoseconds: UInt64
+    ) async -> WorkflowExecutionResult? {
+        await withTaskGroup(of: WorkflowExecutionResult?.self, returning: WorkflowExecutionResult?.self) { group in
+            group.addTask {
+                await task.value
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return nil
+            }
+
+            let firstCompletedResult = await group.next() ?? nil
+            group.cancelAll()
+            return firstCompletedResult
+        }
     }
 }

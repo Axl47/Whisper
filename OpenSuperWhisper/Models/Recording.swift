@@ -15,6 +15,7 @@ enum RecordingDeliveryKind: String, Codable {
 }
 
 enum WorkflowExecutionStatus: String, Codable {
+    case running
     case succeeded
     case failed
 }
@@ -370,6 +371,32 @@ class RecordingStore: ObservableObject {
             }
         } catch {
             print("Failed to update recording status: \(error)")
+        }
+    }
+
+    func updateWorkflowExecutionSync(_ id: UUID, status: WorkflowExecutionStatus, message: String?) async {
+        do {
+            _ = try await dbQueue.write { db -> Int in
+                try Recording
+                    .filter(Recording.Columns.id == id)
+                    .updateAll(db, [
+                        Recording.Columns.workflowExecutionStatus.set(to: status.rawValue),
+                        Recording.Columns.workflowExecutionMessage.set(to: message)
+                    ])
+            }
+
+            if let index = recordings.firstIndex(where: { $0.id == id }) {
+                var updated = recordings[index]
+                updated.workflowExecutionStatus = status
+                updated.workflowExecutionMessage = message
+                recordings[index] = updated
+            }
+
+            await MainActor.run {
+                NotificationCenter.default.post(name: Self.recordingsDidUpdateNotification, object: nil)
+            }
+        } catch {
+            print("Failed to update workflow execution: \(error)")
         }
     }
 
