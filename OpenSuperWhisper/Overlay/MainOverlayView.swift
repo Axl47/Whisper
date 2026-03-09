@@ -130,7 +130,7 @@ struct MainOverlayView: View {
 
             OverlayGlassContainer {
                 OverlayOuterSurface {
-                    VStack(spacing: 18) {
+                    VStack(spacing: 14) {
                         OverlayCommandBar(
                             overlayState: overlayState,
                             onMoveSelection: moveSelection,
@@ -155,7 +155,7 @@ struct MainOverlayView: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
                         } else {
-                            VStack(spacing: 18) {
+                            VStack(spacing: 14) {
                                 if arePermissionsGranted {
                                     OverlayInsetSurface(tone: .content, cornerRadius: 28) {
                                         MainRecordingsListSection(
@@ -187,7 +187,7 @@ struct MainOverlayView: View {
                     }
                 }
             }
-            .padding(18)
+            .padding(12)
 
             if viewModel.transcriptionService.isLoading && arePermissionsGranted {
                 ZStack {
@@ -205,17 +205,7 @@ struct MainOverlayView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.24),
-                    Color.clear,
-                    Color.black.opacity(0.06)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
+        .background(Color.clear)
         .fileDropHandler()
         .onReceive(NotificationCenter.default.publisher(for: RecordingStore.recordingProgressDidUpdateNotification)) { notification in
             guard let userInfo = notification.userInfo,
