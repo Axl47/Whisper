@@ -94,16 +94,39 @@ private struct OverlayOuterSurfaceModifier: ViewModifier {
             : Color.black.opacity(0.14)
     }
 
-    private var ambientWash: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color.white.opacity(colorScheme == .dark ? 0.06 : 0.12),
-                Color.clear,
-                Color.white.opacity(colorScheme == .dark ? 0.02 : 0.05)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+    private var outerBloomColor: Color {
+        Color.white.opacity(colorScheme == .dark ? 0.07 : 0.14)
+    }
+
+    private var lowerLiftColor: Color {
+        Color.white.opacity(colorScheme == .dark ? 0.015 : 0.04)
+    }
+
+    @ViewBuilder
+    private func ambientWash(cornerRadius: CGFloat) -> some View {
+        ZStack {
+            RadialGradient(
+                colors: [
+                    outerBloomColor,
+                    outerBloomColor.opacity(0.45),
+                    Color.clear
+                ],
+                center: .top,
+                startRadius: 0,
+                endRadius: 460
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(colorScheme == .dark ? 0.018 : 0.05),
+                    Color.clear,
+                    lowerLiftColor
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 
     private var topHighlight: some View {
@@ -119,8 +142,7 @@ private struct OverlayOuterSurfaceModifier: ViewModifier {
         if #available(macOS 26.0, *) {
             content
                 .background {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(ambientWash)
+                    ambientWash(cornerRadius: cornerRadius)
                 }
                 .glassEffect(.regular.tint(outerGlassTint), in: .rect(cornerRadius: cornerRadius))
                 .overlay {
@@ -142,8 +164,7 @@ private struct OverlayOuterSurfaceModifier: ViewModifier {
                         }
                 }
                 .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(ambientWash)
+                    ambientWash(cornerRadius: cornerRadius)
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius)
@@ -216,16 +237,39 @@ private struct OverlayInsetSurfaceModifier: ViewModifier {
             : Color.white.opacity(0.16)
     }
 
-    private var ambientWash: LinearGradient {
-        LinearGradient(
-            colors: [
-                Color.white.opacity(colorScheme == .dark ? 0.05 : 0.10),
-                Color.clear,
-                Color.white.opacity(colorScheme == .dark ? 0.02 : 0.05)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+    private var topBloomColor: Color {
+        Color.white.opacity(colorScheme == .dark ? 0.05 : 0.11)
+    }
+
+    private var lowerLiftColor: Color {
+        Color.white.opacity(colorScheme == .dark ? 0.015 : 0.035)
+    }
+
+    @ViewBuilder
+    private func ambientWash(cornerRadius: CGFloat) -> some View {
+        ZStack {
+            RadialGradient(
+                colors: [
+                    topBloomColor,
+                    topBloomColor.opacity(0.4),
+                    Color.clear
+                ],
+                center: .top,
+                startRadius: 0,
+                endRadius: 360
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(colorScheme == .dark ? 0.012 : 0.035),
+                    Color.clear,
+                    lowerLiftColor
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 
     private var insetTopHighlight: some View {
@@ -279,8 +323,7 @@ private struct OverlayInsetSurfaceModifier: ViewModifier {
         if #available(macOS 26.0, *) {
             content
                 .background {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(ambientWash)
+                    ambientWash(cornerRadius: cornerRadius)
                 }
                 .glassEffect(.regular.tint(transcriptGlassTint), in: .rect(cornerRadius: cornerRadius))
                 .overlay {
@@ -301,8 +344,7 @@ private struct OverlayInsetSurfaceModifier: ViewModifier {
                         }
                 }
                 .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .fill(ambientWash)
+                    ambientWash(cornerRadius: cornerRadius)
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius)
