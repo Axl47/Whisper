@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
 
     private lazy var onboardingWindowController = OnboardingWindowController(appState: appState)
+    private lazy var settingsWindowController = SettingsWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBarItem()
@@ -257,9 +258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = menu
     }
 
-    private func openSettingsWindow() {
+    func openSettingsWindow() {
+        overlayController.dismiss(force: true)
         NSApplication.shared.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        settingsWindowController.show()
     }
 
     @objc private func selectMicrophone(_ sender: NSMenuItem) {

@@ -83,6 +83,9 @@ final class AppPreferences {
     
     @UserDefault(key: "initialPrompt", defaultValue: "")
     var initialPrompt: String
+
+    @UserDefault(key: "whisperBoostedWords", defaultValue: "")
+    var whisperBoostedWords: String
     
     @UserDefault(key: "useBeamSearch", defaultValue: false)
     var useBeamSearch: Bool

@@ -1391,8 +1391,12 @@ private func currentShortcutDescription() -> String {
 
 @MainActor
 private func openSettingsWindow() {
-    NSApp.activate(ignoringOtherApps: true)
-    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    guard let appDelegate = NSApp.delegate as? AppDelegate else {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        return
+    }
+    appDelegate.openSettingsWindow()
 }
 
 struct ContentView_Previews: PreviewProvider {

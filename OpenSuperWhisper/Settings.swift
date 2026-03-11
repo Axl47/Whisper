@@ -93,6 +93,12 @@ class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var whisperBoostedWords: String {
+        didSet {
+            AppPreferences.shared.whisperBoostedWords = whisperBoostedWords
+        }
+    }
+
     @Published var useBeamSearch: Bool {
         didSet {
             AppPreferences.shared.useBeamSearch = useBeamSearch
@@ -161,6 +167,7 @@ class SettingsViewModel: ObservableObject {
         self.temperature = prefs.temperature
         self.noSpeechThreshold = prefs.noSpeechThreshold
         self.initialPrompt = prefs.initialPrompt
+        self.whisperBoostedWords = prefs.whisperBoostedWords
         self.useBeamSearch = prefs.useBeamSearch
         self.beamSize = prefs.beamSize
         self.debugMode = prefs.debugMode
@@ -532,6 +539,7 @@ struct Settings: Sendable {
     var temperature: Double
     var noSpeechThreshold: Double
     var initialPrompt: String
+    var whisperBoostedWords: String
     var useBeamSearch: Bool
     var beamSize: Int
     var useAsianAutocorrect: Bool
@@ -553,6 +561,7 @@ struct Settings: Sendable {
         self.temperature = prefs.temperature
         self.noSpeechThreshold = prefs.noSpeechThreshold
         self.initialPrompt = prefs.initialPrompt
+        self.whisperBoostedWords = prefs.whisperBoostedWords
         self.useBeamSearch = prefs.useBeamSearch
         self.beamSize = prefs.beamSize
         self.useAsianAutocorrect = prefs.useAsianAutocorrect
@@ -560,12 +569,18 @@ struct Settings: Sendable {
 }
 
 struct SettingsView: View {
+    let onDone: (() -> Void)?
+
     @StateObject private var viewModel = SettingsViewModel()
     @Environment(\.dismiss) var dismiss
     @State private var isRecordingNewShortcut = false
     @State private var selectedTab = 0
     @State private var previousModelURL: URL?
     @State private var workflowEditorDraft: VoiceWorkflowDraft?
+
+    init(onDone: (() -> Void)? = nil) {
+        self.onDone = onDone
+    }
     
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -614,7 +629,11 @@ struct SettingsView: View {
                             TranscriptionService.shared.reloadModel(with: modelPath)
                         }
                     }
-                    dismiss()
+                    if let onDone {
+                        onDone()
+                    } else {
+                        dismiss()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
@@ -970,6 +989,38 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(.controlBackgroundColor).opacity(0.3))
                 .cornerRadius(12)
+
+                if viewModel.selectedEngine == "whisper" {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Boosted Words")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            TextEditor(text: $viewModel.whisperBoostedWords)
+                                .frame(height: 96)
+                                .padding(6)
+                                .background(Color(.textBackgroundColor))
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                )
+
+                            Text("One preferred word or phrase per line.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            Text("Biases Whisper toward preferred spellings for names and jargon. Does not train the model or permanently learn pronunciation.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.controlBackgroundColor).opacity(0.3))
+                    .cornerRadius(12)
+                }
                 
                 // Transcriptions Directory
                 VStack(alignment: .leading, spacing: 16) {

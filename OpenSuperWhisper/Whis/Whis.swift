@@ -160,14 +160,32 @@ public class MyWhisperContext {
     
     public func tokenize(text: String, tokens: inout [WhisperToken], nMaxTokens: Int) -> Int {
         guard let ctx = ctx else { return -1 }
-        return Int(text.withCString {
-            whisper_tokenize(ctx, $0, &tokens, Int32(nMaxTokens))
+        return Int(text.withCString { cText in
+            tokens.withUnsafeMutableBufferPointer { buffer in
+                let maxTokens = min(buffer.count, nMaxTokens)
+                return whisper_tokenize(ctx, cText, buffer.baseAddress, Int32(maxTokens))
+            }
         })
     }
     
     public func tokenCount(text: String) -> Int {
         guard let ctx = ctx else { return 0 }
-        return Int(text.withCString { whisper_token_count(ctx, $0) })
+        var capacity = max(1, text.utf8.count)
+
+        while true {
+            var tokens = Array(repeating: WhisperToken(), count: capacity)
+            let tokenCount = Int(text.withCString { cText in
+                tokens.withUnsafeMutableBufferPointer { buffer in
+                    whisper_tokenize(ctx, cText, buffer.baseAddress, Int32(buffer.count))
+                }
+            })
+
+            if tokenCount >= 0 {
+                return tokenCount
+            }
+
+            capacity = max(capacity * 2, -tokenCount)
+        }
     }
     
     // MARK: - Language Handling

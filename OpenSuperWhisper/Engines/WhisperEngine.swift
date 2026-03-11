@@ -21,6 +21,14 @@ private class ProgressContext {
     }
 }
 
+private final class WhisperBoostedWordsCallbackContext: @unchecked Sendable {
+    let model: WhisperBoostedWordsModel
+
+    init(model: WhisperBoostedWordsModel) {
+        self.model = model
+    }
+}
+
 struct WhisperSegmentResult: Equatable, Sendable {
     let text: String
     let startTime: Double
@@ -188,6 +196,17 @@ class WhisperEngine: TranscriptionEngine {
             params.beamSearchBeamSize = Int32(settings.beamSize)
         }
 
+        let boostedWordsContext = makeBoostedWordsCallbackContext(
+            rawValue: settings.whisperBoostedWords,
+            context: context
+        )
+        if let boostedWordsContext {
+            params.logitsFilterCallback = Self.boostedWordsLogitsFilterCallback
+            params.logitsFilterCallbackUserData = Unmanaged
+                .passUnretained(boostedWordsContext)
+                .toOpaque()
+        }
+
         var cParams = params.toC()
         cParams.abort_callback = makeAbortCallback()
 
@@ -197,8 +216,10 @@ class WhisperEngine: TranscriptionEngine {
 
         try Task.checkCancellation()
 
-        guard context.full(samples: samples, params: &cParams) else {
-            throw TranscriptionError.processingFailed
+        try withExtendedLifetime(boostedWordsContext) {
+            guard context.full(samples: samples, params: &cParams) else {
+                throw TranscriptionError.processingFailed
+            }
         }
 
         try Task.checkCancellation()
@@ -286,6 +307,99 @@ class WhisperEngine: TranscriptionEngine {
             }
         }
     }
+
+    private func makeBoostedWordsCallbackContext(
+        rawValue: String,
+        context: MyWhisperContext
+    ) -> WhisperBoostedWordsCallbackContext? {
+        let compiler = WhisperBoostedWordsCompiler { [weak context] text in
+            guard let context else {
+                return []
+            }
+            return self.tokenizeBoostedWords(text, with: context)
+        }
+
+        guard let model = compiler.compile(rawValue: rawValue, preset: .conservative) else {
+            return nil
+        }
+
+        return WhisperBoostedWordsCallbackContext(model: model)
+    }
+
+    private func tokenizeBoostedWords(
+        _ text: String,
+        with context: MyWhisperContext
+    ) -> [WhisperToken] {
+        // `whisper_token_count()` in this checkout is implemented via
+        // `whisper_tokenize(..., NULL, 0)`, which logs an error for any
+        // non-empty phrase. Size the first buffer from the UTF-8 byte count
+        // instead, then retry only if whisper still reports it was too small.
+        var capacity = max(1, text.utf8.count)
+
+        while true {
+            var tokens = Array(repeating: WhisperToken(), count: capacity)
+            let tokenCount = context.tokenize(text: text, tokens: &tokens, nMaxTokens: tokens.count)
+
+            if tokenCount >= 0 {
+                return Array(tokens.prefix(tokenCount))
+            }
+
+            capacity = max(capacity * 2, -tokenCount)
+        }
+    }
+
+    private static let boostedWordsLogitsFilterCallback:
+        @convention(c) (
+            OpaquePointer?,
+            OpaquePointer?,
+            UnsafePointer<whisper_token_data>?,
+            Int32,
+            UnsafeMutablePointer<Float>?,
+            UnsafeMutableRawPointer?
+        ) -> Void = { whisperContext, _, tokenDataPointer, tokenCount, logitsPointer, userData in
+            guard let logitsPointer, let userData else {
+                return
+            }
+
+            let callbackContext = Unmanaged<WhisperBoostedWordsCallbackContext>
+                .fromOpaque(userData)
+                .takeUnretainedValue()
+
+            let bufferCount = max(0, Int(tokenCount))
+            let tokenData = tokenDataPointer.map {
+                UnsafeBufferPointer(start: $0, count: bufferCount)
+            } ?? UnsafeBufferPointer<whisper_token_data>(start: nil, count: 0)
+
+            let historyLength = max(1, callbackContext.model.maxSequenceLength - 1)
+            let recentTokens: [WhisperToken]
+            if tokenData.isEmpty {
+                recentTokens = []
+            } else {
+                recentTokens = Array(tokenData.suffix(historyLength).map(\.id))
+            }
+
+            let lastTokenText: String?
+            if let whisperContext, let lastTokenID = tokenData.last?.id,
+               let cString = whisper_token_to_str(whisperContext, lastTokenID) {
+                lastTokenText = String(cString: cString)
+            } else {
+                lastTokenText = nil
+            }
+
+            let boosts = WhisperBoostedWordsBiaser.boosts(
+                for: recentTokens,
+                lastTokenText: lastTokenText,
+                model: callbackContext.model
+            )
+
+            for (token, boost) in boosts {
+                let tokenIndex = Int(token)
+                guard tokenIndex >= 0 else {
+                    continue
+                }
+                logitsPointer[tokenIndex] += boost
+            }
+        }
 
     private func extractSegments(
         from context: MyWhisperContext,
